@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Safar Airlines · Choose your seat</title>
+  <meta name="description" content="Safar Airlines. Dreams to Destinations. Pick your seat from a live 3D aircraft, see the exact view from your window before you pay, then step up to First and The Residence.">
+  <meta name="theme-color" content="#16aed4">
+  <meta property="og:title" content="Safar Airlines · Choose your seat">
+  <meta property="og:description" content="Johannesburg to Jeddah. See your window before you book.">
+  <meta property="og:image" content="assets/brand/share.jpg">
+  <link rel="icon" type="image/png" href="assets/brand/favicon.png">
+  <link rel="apple-touch-icon" href="assets/brand/favicon.png">
+  <link rel="preload" href="vendor/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <canvas id="gl" aria-label="3D aircraft seat map"></canvas>
+
+  <!-- Loader -->
+  <div id="loader" class="loader" role="status" aria-live="polite">
+    <div class="loader-inner">
+      <span class="loader-logo" role="img" aria-label="Safar"></span>
+      <div class="loader-sub">AIRLINES</div>
+      <div class="loader-kicker">Flight <span data-flight-no>SAF 001</span></div>
+      <div class="loader-title">Preparing your aircraft</div>
+      <div class="loader-bar"><i></i></div>
+    </div>
+  </div>
+
+  <!-- Top bar -->
+  <header class="topbar ui-fade">
+    <div class="chip brand-chip" aria-label="Safar Airlines"><span class="brand-logo" role="img" aria-label="Safar"></span><span class="brand-sub" data-brand-sub>AIRLINES</span></div>
+    <div class="chip route-chip">
+      <span class="route-codes"><b data-from-code>DXB</b><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13.5l8.5-2.2L15 4h2.2l-2.6 6.6 4.9-1.3L21.3 7H23l-1.6 4.2L23 15h-1.7l-1.8-2.3-4.9 1.3L17.2 20H15l-4.5-6.3L2 15.9z"/></svg><b data-to-code>LAX</b></span>
+      <span class="route-meta"><span data-date>Tue 24 Nov</span> · <span data-duration>16h 15m</span> · Non-stop</span>
+    </div>
+  </header>
+
+  <!-- Overview headline -->
+  <div class="headline ui-fade" aria-hidden="true">
+    <span class="kicker" data-tagline>Dreams to Destinations</span>
+    <h1>Your Safar begins here.<br><span>Pick a seat. See the view before you pay.</span></h1>
+  </div>
+
+  <!-- Back to all cabins -->
+  <button class="btn-back ui-fade" id="btnAllCabins" type="button" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    All cabins
+  </button>
+
+  <!-- Legend -->
+  <div class="legend ui-fade" id="legend" hidden>
+    <span><i class="dot dot-free"></i>Available</span>
+    <span><i class="dot dot-booked"></i>Taken</span>
+    <span><i class="dot dot-yours"></i>Yours</span>
+  </div>
+
+  <!-- Floating price tag -->
+  <div id="tag" class="tag" aria-hidden="true">
+    <div class="tag-l">
+      <small class="tag-kicker">Economy class</small>
+      <b class="tag-title">Economy</b>
+      <span class="tag-status">58 seats left</span>
+    </div>
+    <div class="tag-r">
+      <small class="tag-cur">USD</small>
+      <b class="tag-price">1,190</b>
+    </div>
+    <button class="tag-go" type="button">View from seat <span aria-hidden="true">→</span></button>
+  </div>
+
+  <!-- Hint + cabin pills -->
+  <div class="dock ui-fade">
+    <div class="hint" id="hint">Hover a cabin to see prices</div>
+    <nav class="cabins" id="cabins" aria-label="Cabins"></nav>
+  </div>
+
+  <!-- Seat view: the live 3D cabin from your seat, with the boarding pass over it -->
+  <section id="scene" class="scene" aria-hidden="true">
+    <div class="scene-shade"></div>
+    <div class="look-hint" id="lookHint" aria-hidden="true">Drag to look around</div>
+
+    <button class="btn-back scene-back" id="btnSceneBack" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Cabin map
+    </button>
+
+    <div class="room-nav" id="roomNav" hidden>
+      <div class="room-pill"><span class="room-brand">The Residence</span><span class="room-name" id="roomName">Living room</span></div>
+      <div class="room-tabs" id="roomTabs" role="tablist"></div>
+    </div>
+
+    <div class="scene-ui" id="sceneUi">
+      <article class="pass" id="pass">
+        <div class="pass-main">
+          <header class="pass-head">
+            <span class="pass-brand"><i class="pass-logo" role="img" aria-label="Safar Airlines"></i>Boarding pass</span>
+            <span class="pass-class" data-p="classLabel">Economy</span>
+          </header>
+          <div class="pass-route">
+            <div class="pass-port">
+              <div class="pass-code" data-p="fromCode">DXB</div>
+              <div class="pass-city" data-p="fromCity">Dubai</div>
+              <div class="pass-time" data-p="fromTime">08:40</div>
+            </div>
+            <div class="pass-mid">
+              <div class="pass-line"><i></i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13.5l8.5-2.2L15 4h2.2l-2.6 6.6 4.9-1.3L21.3 7H23l-1.6 4.2L23 15h-1.7l-1.8-2.3-4.9 1.3L17.2 20H15l-4.5-6.3L2 15.9z"/></svg><i></i></div>
+              <div class="pass-dur" data-p="duration">Non-stop · 16h 15m</div>
+            </div>
+            <div class="pass-port pass-port-r">
+              <div class="pass-code" data-p="toCode">LAX</div>
+              <div class="pass-city" data-p="toCity">Los Angeles</div>
+              <div class="pass-time" data-p="toTime">13:55</div>
+            </div>
+          </div>
+          <dl class="pass-meta">
+            <div><dt>Passenger</dt><dd data-p="passenger">You</dd></div>
+            <div><dt data-p="seatWord">Seat</dt><dd class="accent" data-p="seat">32A</dd></div>
+            <div><dt>Gate</dt><dd data-p="gate">B12</dd></div>
+            <div><dt>Boards</dt><dd data-p="boards">07:55</dd></div>
+          </dl>
+        </div>
+        <div class="pass-stub">
+          <header class="pass-head"><span>Flight <span data-p="flight">001</span></span></header>
+          <div class="stub-body">
+            <div class="stub-seat">
+              <small data-p="seatWord2">Seat</small>
+              <b data-p="seatBig">32A</b>
+              <span class="stub-status" data-p="status">Available</span>
+            </div>
+            <div class="stub-code">
+              <div class="barcode" data-p="barcode"></div>
+              <div class="stub-price"><small data-p="currency">USD</small> <b data-p="price">1,190</b></div>
+            </div>
+          </div>
+          <div class="stub-stamp" aria-hidden="true">Confirmed</div>
+        </div>
+      </article>
+
+      <div class="actions" id="actions">
+        <button class="btn btn-primary" id="btnBook" type="button">Book seat 32A</button>
+        <span class="actions-label" id="upsellLabel">Not satisfied?</span>
+        <button class="btn btn-ghost" id="btnUpsell" type="button">See Premium <span aria-hidden="true">→</span></button>
+      </div>
+
+      <div class="room-bar" id="roomBar" hidden>
+        <span class="room-bar-label" id="roomBarLabel">Your living room</span>
+        <button class="btn btn-lux" id="btnRoomNext" type="button">Next: Bedroom <span aria-hidden="true">→</span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Class title card used between scenes -->
+  <div id="titlecard" class="titlecard" aria-hidden="true">
+    <div class="tc-kicker" id="tcKicker">Class 03 / 05</div>
+    <div class="tc-title" id="tcTitle">First</div>
+    <div class="tc-sub" id="tcSub"></div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div class="credit ui-fade" data-credit></div>
+
+  <noscript><div class="noscript">This experience needs JavaScript and WebGL.</div></noscript>
+
+  <script src="vendor/gsap.min.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
