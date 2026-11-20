@@ -296,10 +296,10 @@ function framePose(cx, cz, lenLong, lenShort, tilt = 0.2, ty = F) {
   if (portrait) target.x -= dist * 0.02; else target.z += dist * 0.012;
   return { pos: target.clone().addScaledVector(off, dist), target, up };
 }
-// On a phone held upright the whole aircraft, wingtip to wingtip, is fitted between the top bar
-// and the text at the bottom; tapping a cabin then zooms in close, so seats stay easy to pick.
+// On a phone held upright the cabins fill the screen between the top bar and the text at the
+// bottom (the wingtips run off the sides), so seats are big enough to pick without zooming.
 const overviewPose = () => (isPortrait()
-  ? fitPose(OVERVIEW_DIR_PORTRAIT, { mx: 0.95, ...clearBand(), up: NOSE_UP })
+  ? fitPose(OVERVIEW_DIR_PORTRAIT, { mx: 0.96, ...clearBand(), up: NOSE_UP, pts: cabinOutline() })
   : IS_DD ? framePose(2.0, 0, 92, 47, 0.2, deckFloor() + 0.75) : IS_NARROW ? framePose(1.0, 0, 47, 25, 0.2, FUS.FLOOR_Y + 0.75) : framePose(1.5, 0, 80, 40, 0.2, -0.5));
 // the free band between the top bar and the headline (in normalised screen units), so the
 // aircraft never sits under the text, whatever the phone's size
@@ -354,9 +354,22 @@ function aircraftOutline() {
   hullCloud = pts;
   return pts;
 }
+// just the fuselage over the cabins, with a little of the nose and tail: what a phone frames
+let cabinCloud = null;
+function cabinOutline() {
+  if (cabinCloud) return cabinCloud;
+  const pts = [], R = FUS.R, x0 = FUS.CABIN_X0 - 3, x1 = FUS.CABIN_X1 + 3;
+  for (let i = 0; i <= 16; i++) {
+    const x = x0 + (x1 - x0) * i / 16;
+    for (const z of [-R, R]) pts.push(new V3(x, 0, z));
+    pts.push(new V3(x, R, 0));
+  }
+  cabinCloud = pts;
+  return pts;
+}
 const fitCam = new THREE.PerspectiveCamera();
-function fitPose(dir, { mx = 0.9, my = 0.88, lift = 0, up: upVec = WORLD_UP, fov = BASE_FOV } = {}) {
-  const pts = aircraftOutline();
+function fitPose(dir, { mx = 0.9, my = 0.88, lift = 0, up: upVec = WORLD_UP, fov = BASE_FOV, pts: given = null } = {}) {
+  const pts = given || aircraftOutline();
   fitCam.fov = fov; fitCam.aspect = camera.aspect; fitCam.near = 1; fitCam.far = 5000;
   fitCam.updateProjectionMatrix();
   const target = new V3(0.5, 0.4, 0);
@@ -380,7 +393,9 @@ function fitPose(dir, { mx = 0.9, my = 0.88, lift = 0, up: upVec = WORLD_UP, fov
     let lo = 60, hi = 3000;
     for (let i = 0; i < 24; i++) {
       const mid = (lo + hi) / 2, b = bounds(mid);
-      if (b.x0 >= -mx && b.x1 <= mx && b.y0 >= -my && b.y1 <= my) hi = mid; else lo = mid;
+      // the subject is centred on `lift`, so it has to fit the band around lift, not around the
+      // middle of the screen (that mistake used to shrink the phone views by about half)
+      if (b.x0 >= -mx && b.x1 <= mx && b.y0 >= lift - my && b.y1 <= lift + my) hi = mid; else lo = mid;
     }
     D = hi;
     const b = bounds(D);
@@ -2014,6 +2029,20 @@ async function openSharedSeat(seat) {
   flyToSeat(seat, seat.cls === 'residence' ? 'living' : undefined);
 }
 
+// On phones and tablets the seat key (Available / Taken / Yours) sits just above the buttons at
+// the bottom. That row can wrap onto two lines (more travellers adds "Best seats together"), so
+// the key follows the row's real height instead of a fixed position.
+{
+  const legend = ui.els.legend, dock = document.querySelector('.dock');
+  const placeLegend = () => {
+    if (innerWidth > 860 || !dock) { legend.style.bottom = ''; return; }
+    legend.style.bottom = `${Math.round(innerHeight - dock.getBoundingClientRect().top + 10)}px`;
+  };
+  if (dock && 'ResizeObserver' in window) new ResizeObserver(placeLegend).observe(dock);
+  addEventListener('resize', placeLegend);
+  placeLegend();
+}
+
 // ---------------------------------------------------------------- resize
 function onResize() {
   camera.aspect = innerWidth / innerHeight;
@@ -2316,4 +2345,4 @@ function simulate(dt) {
 })();
 
 // debugging handle
-window.__flight = { THREE, scene, camera, cabin, ac, S, rig, startJourney, updateJourney, get J() { return J; }, ife, fitPose, heroPose, setTimeOfDay, setView, renderer, composer, gtao, sky, airframe, flight, cabinFill, setInside, enterClass, flyToSeat, focusShadow, look, lens, nudgeLook, upgradeTo, goRoom, backToPlane, vr, vrSetup, vrSpots, vrGo, vrToneMapShaders, simulate, audio };
+window.__flight = { THREE, scene, camera, cabin, ac, S, rig, startJourney, updateJourney, get J() { return J; }, ife, fitPose, heroPose, setTimeOfDay, setView, renderer, composer, gtao, sky, airframe, flight, cabinFill, setInside, enterClass, flyToSeat, focusShadow, look, lens, nudgeLook, upgradeTo, goRoom, backToPlane, vr, vrSetup, vrSpots, vrGo, vrToneMapShaders, simulate, audio, overviewPose, fitPose, cabinOutline };

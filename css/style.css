@@ -624,6 +624,7 @@ body.looking .scene-ui { opacity: 0.14; }
 @media (max-width: 720px) {
   .headline { top: auto; bottom: calc(206px + var(--safe-b)); left: 18px; right: 18px; }
   .headline h1 { font-size: 22px; }
+  .headline .kicker { margin-bottom: 6px; font-size: 10px; }
   .cabin-pill { padding: 7px 12px; }
   .cabins { -webkit-mask: linear-gradient(90deg, #000 85%, transparent); mask: linear-gradient(90deg, #000 85%, transparent); }
   .cabins.at-end { -webkit-mask: none; mask: none; }
@@ -946,3 +947,10 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 3px s
 .seatlist-row b { width: 64px; font-size: 13px; color: #5b6878; }
 .seatlist-row button { min-width: 44px; height: 36px; border-radius: 10px; border: 0; background: #e3f4fb; color: #0f2a44; font: 700 13px/1 Inter, system-ui, sans-serif; cursor: pointer; }
 .seatlist-row button:hover { background: #cdeefa; }
+
+/* phones: a smaller headline leaves more room for the aircraft, and a tighter, darker shadow
+   keeps it readable where it sits over the white tail */
+@media (max-width: 480px) {
+  .headline h1 { font-size: 19px; line-height: 1.15; }
+  .headline { text-shadow: 0 1px 3px rgba(8, 24, 44, 0.55), 0 2px 18px rgba(8, 24, 44, 0.45); }
+}
