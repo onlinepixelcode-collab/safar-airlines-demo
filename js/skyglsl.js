@@ -8,6 +8,8 @@ uniform float uTurbidity;
 uniform float uMieCoef;
 uniform float uMieG;
 uniform float uSkyGain;
+uniform float uAltitude;
+uniform float uNight;
 
 const float SKY_PI = 3.141592653589793;
 const vec3 SKY_TOTAL_RAYLEIGH = vec3(5.804542996261093E-6, 1.3562911419845635E-5, 3.0265902468824876E-5);
@@ -48,10 +50,28 @@ vec3 skyColor(vec3 dir, bool disk) {
   if (disk) {
     float sd = smoothstep(0.99995, 0.99999, cosTheta);
     L0 += sunE * 1200.0 * Fex * sd;
-    L0 += sunE * 6.0 * Fex * pow(max(cosTheta, 0.0), 900.0);
+    // glare around the sun: a tight core and a long soft fall-off, no hard edge
+    float cs = max(cosTheta, 0.0);
+    L0 += sunE * Fex * (1.2 * pow(cs, 9000.0) + 0.05 * pow(cs, 900.0) + 0.012 * pow(cs, 90.0) + 0.004 * pow(cs, 12.0));
   }
   vec3 tex = (Lin + L0) * 0.04 + vec3(0.0, 0.0003, 0.00075);
-  return pow(tex, vec3(1.0 / 2.4)) * uSkyGain;
+  vec3 col = pow(tex, vec3(1.0 / 2.4)) * uSkyGain;
+  // from cruise altitude (about 11 km) there is far less air overhead than from the ground:
+  // the sky above is a deeper, more saturated blue, and only the horizon stays pale
+  float zen = smoothstep(0.02, 0.8, dir.y);
+  col *= mix(vec3(1.0), vec3(0.7, 0.84, 1.03), zen * uAltitude);
+  // night: the daylight model doesn't apply. A moonlit sky seen from cruise altitude is deep
+  // blue-black overhead and only a little paler at the horizon, with a soft glow of scattered
+  // moonlight around the moon and a faint green airglow band just above the horizon
+  if (uNight > 0.0) {
+    float hh = clamp(dir.y, -0.1, 1.0);
+    vec3 nc = mix(vec3(0.0062, 0.0112, 0.0285), vec3(0.0011, 0.0023, 0.0088), pow(smoothstep(-0.03, 0.8, hh), 0.5));
+    float mu = max(cosTheta, 0.0);
+    nc += vec3(0.018, 0.026, 0.05) * pow(mu, 40.0) + vec3(0.0045, 0.0065, 0.013) * pow(mu, 6.0);
+    nc += vec3(0.0026, 0.0052, 0.0032) * exp(-abs(hh - 0.015) * 28.0);
+    col = mix(col, nc, uNight);
+  }
+  return col;
 }
 `;
 
@@ -64,5 +84,7 @@ export function skyUniforms(preset) {
     uMieCoef: { value: s.mie },
     uMieG: { value: s.mieG },
     uSkyGain: { value: s.gain },
+    uAltitude: { value: preset.altitude ?? 1 },
+    uNight: { value: preset.night || 0 },
   };
 }

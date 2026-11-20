@@ -87,16 +87,32 @@ export function createUI() {
     const status = cls === 'residence' ? c.tagline : cls === 'first' ? `${free} suite${free === 1 ? '' : 's'} left` : `${free} seats left`;
     setTag({ key: `c:${cls}:${free}`, kicker: c.kicker, title: c.name, status, statusKind: free > 0 ? 'free' : 'booked', price: c.price });
   }
-  function showSeatTag(seat, { go = false } = {}) {
+  // "40A–C" for seats side by side in one row, otherwise a list
+  function groupLabel(list) {
+    if (!list || !list.length) return '';
+    if (list.length === 1) return list[0].id;
+    const sameRow = list.every((q) => q.row === list[0].row);
+    return sameRow ? `${list[0].id}–${list[list.length - 1].letter}` : list.map((q) => q.id).join(', ');
+  }
+  function showSeatTag(seat, { go = false, group = null, wanted = 1 } = {}) {
     const c = CONFIG.classes[seat.cls];
     let title, kicker;
     if (seat.cls === 'residence') { title = c.name; kicker = 'Living · Bedroom · Shower'; }
     else if (seat.cls === 'first') { title = `Suite ${seat.id}`; kicker = `First class · Row ${seat.row}`; }
     else { title = `Seat ${seat.id}`; kicker = `${c.name} · Row ${seat.row}`; }
     const kind = seat.yours ? 'yours' : seat.booked ? 'booked' : 'free';
-    const status = seat.yours ? 'Yours' : seat.booked ? 'Taken' : seat.cls === 'residence' ? c.tagline : 'Available';
+    let status = seat.yours ? 'Yours' : seat.booked ? 'Taken' : seat.cls === 'residence' ? c.tagline : 'Available';
+    let price = c.price;
+    if (group && group.length > 1) {
+      title = `Seats ${groupLabel(group)}`;
+      kicker = `${c.name} · ${group.length} together`;
+      status = `${group.length} × ${money(c.price)}`;
+      price = c.price * group.length;
+    } else if (wanted > 1 && !seat.booked && seat.cls !== 'residence' && seat.cls !== 'first') {
+      status = `No ${wanted} free seats together here`;
+    }
     setTag({
-      key: `s:${seat.id}:${kind}:${go}`, kicker, title, status, statusKind: kind, price: c.price,
+      key: `s:${seat.id}:${kind}:${go}:${group ? group.length : 0}:${wanted}`, kicker, title, status, statusKind: kind, price,
       go: go && !(seat.booked && !seat.yours), goLabel: seat.cls === 'residence' ? 'Step inside' : 'View from seat',
     });
   }
@@ -152,7 +168,7 @@ export function createUI() {
     P.currency.textContent = F.currency; P.price.textContent = money(c.price);
     P.barcode.innerHTML = barcode(`${F.number}-${sid}`);
     let status = 'Available';
-    if (seat && seat.yours) status = 'Confirmed';
+    if (seat && seat.yours) status = 'Held for you';
     else if (cls === 'first') { const n = Math.max(1, c.available); status = `${n} suite${n === 1 ? '' : 's'} left`; }
     else if (cls === 'residence') status = c.tagline;
     P.status.textContent = status;
@@ -177,7 +193,7 @@ export function createUI() {
   return {
     body, setLoader, hideLoader, hint, buildPills, setActivePill, pillHover,
     showClassTag, showSeatTag, hideTag, placeTag, shakeTag, tag, tagGo: tagEls.go,
-    toast, sceneEl,
+    toast, sceneEl, groupLabel,
     pass, fillPass, titleCard,
     els: {
       btnAll: $('#btnAllCabins'), legend: $('#legend'), btnSceneBack: $('#btnSceneBack'),

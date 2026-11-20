@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FUS, U, DOORS, WINDOWS, WIN, mulberry32 } from './geo.js';
+import { FUS, U, D, DOORS, UPPER_DOORS, WINDOWS, WIN, WIN_ROWS, IS_DD, IS_NARROW, mulberry32 } from './geo.js';
 
 function makeCanvas(w, h) {
   const c = document.createElement('canvas');
@@ -46,40 +46,30 @@ export function makeLiveryTexture(aniso, hi = false, colors = null) {
   g.strokeStyle = 'rgba(108,118,130,0.16)';
   g.lineWidth = k;
   for (let x = -33; x < 33; x += 2.35) {
-    const px = U(x) * W;
+    const px = U(D(x)) * W;
     g.beginPath(); g.moveTo(px, 0); g.lineTo(px, H); g.stroke();
   }
   for (const deg of [58, 122, 238, 302]) {
     const py = (deg / 360) * H;
-    g.beginPath(); g.moveTo(U(-30) * W, py); g.lineTo(U(29) * W, py); g.stroke();
+    g.beginPath(); g.moveTo(U(D(-30)) * W, py); g.lineTo(U(D(29)) * W, py); g.stroke();
   }
 
   drawOpenings(g, W, H, k);
 
   // flight-deck windscreen ("mask") drawn in (x, theta) space on both sides
-  const poly = [[33.38, 0], [33.38, 30], [32.75, 50], [32.2, 61], [32.0, 53], [32.55, 29], [32.9, 0]];
   g.fillStyle = '#11151b';
-  for (const side of [1, -1]) {
-    g.beginPath();
-    poly.forEach(([x, deg], i) => {
-      const th = side > 0 ? deg : 360 - deg;
-      const px = U(x) * W, py = (th / 360) * H;
-      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
-    });
-    g.closePath(); g.fill();
-  }
-  // wrap across v=0 seam (top centre)
-  g.fillRect(U(32.9) * W, 0, (U(33.38) - U(32.9)) * W, 3 * k);
-  g.fillRect(U(32.9) * W, H - 3 * k, (U(33.38) - U(32.9)) * W, 3 * k);
+  drawWindscreen(g, W, H, 0);
   // pane posts
   g.strokeStyle = 'rgba(220,226,232,0.5)';
   g.lineWidth = 1.5 * k;
+  const wo = WINDSCREEN_DX;
   for (const deg of [20, 44, 340, 316]) {
     const py = (deg / 360) * H;
-    g.beginPath(); g.moveTo(U(32.3) * W, py); g.lineTo(U(33.4) * W, py); g.stroke();
+    g.beginPath(); g.moveTo(U(32.3 + wo) * W, py); g.lineTo(U(33.4 + wo) * W, py); g.stroke();
   }
 
-  const t = finish(c, { aniso });
+  // wraps around the fuselage: the nose and tail cone run their angle from -180 to 180 degrees
+  const t = finish(c, { aniso, repeat: true });
   t.wrapT = THREE.RepeatWrapping;
   t.flipY = false; // canvas row = v, so (x, theta) drawing maps straight onto the hull
   return t;
@@ -144,11 +134,11 @@ function paintRearFacets(g, W, H, colors) {
     [0.8, [104, 182, 236]],
     [1.0, [74, 160, 228]],
   ];
-  const xFrom = 12, xTo = -35.6;
+  const xFrom = D(12), xTo = D(-35.6);
   const px0 = U(xTo) * W, px1 = U(xFrom) * W;
+  const u9 = U(D(9)), uSpan = U(D(9)) - U(D(-22));
   paintFacets(g, px0, 0, px1 - px0, H, 22, 10, (cx, cy, rng) => {
-    const x = (cx / W) * 71.2 - 35.6;
-    let t = smooth01((9 - x) / 31) + (rng() - 0.5) * 0.2;
+    let t = smooth01((u9 - cx / W) / uSpan) + (rng() - 0.5) * 0.2;
     t = Math.min(1, Math.max(0, t));
     if (t < 0.04) return null;
     let col = ramp(stops, t);
@@ -162,6 +152,107 @@ function paintRearFacets(g, W, H, colors) {
   }, { seed: 41, jitter: 0.8 });
 }
 
+// The flight-deck windscreen in (x, degrees from the top) on the nose, joined across the top.
+// On the double-decker the nose is longer, so the same shape sits further forward.
+export const WINDSCREEN_DX = IS_DD ? 3.95 : IS_NARROW ? -14.85 : 0;
+export const WS_POLY = [[33.38, 0], [33.38, 30], [32.75, 50], [32.2, 61], [32.0, 53], [32.55, 29], [32.9, 0]];
+function drawWindscreen(g, W, H, inset) {
+  // inset (in degrees and metres) shrinks the shape a little, to leave a dark frame round the glass
+  for (const side of [1, -1]) {
+    g.beginPath();
+    WS_POLY.forEach(([x, deg], i) => {
+      const cx = 32.7, xd = x + (x > cx ? -inset * 0.06 : inset * 0.06) + WINDSCREEN_DX;
+      const dd = deg < 30 ? deg : deg - inset;
+      const th = side > 0 ? dd : 360 - dd;
+      const px = U(xd) * W, py = (th / 360) * H;
+      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    });
+    g.closePath(); g.fill();
+  }
+  // across the v = 0 seam (top centre)
+  const a = U(32.9 + WINDSCREEN_DX + inset * 0.06) * W, b = U(33.38 + WINDSCREEN_DX - inset * 0.06) * W;
+  g.fillRect(a, 0, b - a, 6 * (W / 4096));
+  g.fillRect(a, H - 6 * (W / 4096), b - a, 6 * (W / 4096));
+}
+// alpha mask for the windscreen: holes in the nose skin (solid = white) or the glass itself
+export function makeWindscreenMask({ glass = false } = {}) {
+  const W = 4096, H = 1024;
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  g.fillStyle = glass ? '#000' : '#fff';
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = glass ? '#fff' : '#000';
+  drawWindscreen(g, W, H, 1.6);
+  const t = finish(c, { srgb: false, repeat: true });
+  t.flipY = false;
+  return t;
+}
+
+// Flight-deck displays: six screens across the panel (flight, navigation and engine pages)
+export function makeCockpitPanelTexture(engines = 2) {
+  const W = 1024, H = 256;
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  g.fillStyle = '#20252c'; g.fillRect(0, 0, W, H);
+  const sw = 138, sh = 150, top = 52;
+  const xs = [36, 196, 356, 530, 690, 850];
+  xs.forEach((x, i) => {
+    g.fillStyle = '#05080c'; rr(g, x - 6, top - 6, sw + 12, sh + 12, 10); g.fill();
+    g.save(); g.beginPath(); rr(g, x, top, sw, sh, 6); g.clip();
+    const kind = [0, 1, 2, 3, 1, 0][i];
+    if (kind === 0) {                                        // primary flight display: horizon
+      g.fillStyle = '#2f7fd6'; g.fillRect(x, top, sw, sh * 0.52);
+      g.fillStyle = '#8a5a2b'; g.fillRect(x, top + sh * 0.52, sw, sh);
+      g.strokeStyle = '#fff'; g.lineWidth = 2;
+      for (let k = -2; k <= 2; k++) { if (!k) continue; const y = top + sh * 0.52 - k * 14; g.beginPath(); g.moveTo(x + sw / 2 - (k % 2 ? 14 : 24), y); g.lineTo(x + sw / 2 + (k % 2 ? 14 : 24), y); g.stroke(); }
+      g.fillStyle = '#ffd400'; g.fillRect(x + sw / 2 - 30, top + sh * 0.52 - 2, 20, 4); g.fillRect(x + sw / 2 + 10, top + sh * 0.52 - 2, 20, 4);
+      g.fillStyle = 'rgba(20,24,30,0.85)'; g.fillRect(x, top, 26, sh); g.fillRect(x + sw - 26, top, 26, sh);
+      g.fillStyle = '#e8eef4'; g.font = '600 10px monospace';
+      for (let k = 0; k < 6; k++) { g.fillText(String(240 + k * 10), x + 2, top + sh - 12 - k * 24); g.fillText(String(37 + k), x + sw - 22, top + sh - 12 - k * 24); }
+    } else if (kind === 1) {                                 // navigation display: arcs and route
+      g.fillStyle = '#000'; g.fillRect(x, top, sw, sh);
+      g.strokeStyle = '#e8eef4'; g.lineWidth = 1.5;
+      for (const r of [40, 80, 120]) { g.beginPath(); g.arc(x + sw / 2, top + sh - 14, r, Math.PI * 1.15, Math.PI * 1.85); g.stroke(); }
+      g.strokeStyle = '#ff3df5'; g.lineWidth = 2.5; g.beginPath(); g.moveTo(x + sw / 2, top + sh - 14); g.lineTo(x + sw / 2 + 16, top + 70); g.lineTo(x + sw / 2 + 6, top + 18); g.stroke();
+      g.fillStyle = '#2bff6a'; g.font = '600 10px monospace'; g.fillText('JED', x + sw / 2 + 12, top + 16);
+      g.fillStyle = '#ffd400'; g.beginPath(); g.moveTo(x + sw / 2, top + sh - 22); g.lineTo(x + sw / 2 - 7, top + sh - 6); g.lineTo(x + sw / 2 + 7, top + sh - 6); g.closePath(); g.fill();
+    } else if (kind === 2) {                                 // engine display: one gauge per engine
+      g.fillStyle = '#000'; g.fillRect(x, top, sw, sh);
+      const n = engines, cw = sw / n;
+      for (let e = 0; e < n; e++) {
+        const cx = x + cw * (e + 0.5);
+        for (const [cy, val] of [[top + 40, 0.82], [top + 100, 0.7]]) {
+          g.strokeStyle = '#e8eef4'; g.lineWidth = 2; g.beginPath(); g.arc(cx, cy, Math.min(22, cw * 0.38), Math.PI * 0.8, Math.PI * 2.2); g.stroke();
+          g.strokeStyle = '#2bff6a'; g.lineWidth = 3; g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(Math.PI * (0.8 + 1.4 * val)) * 18, cy + Math.sin(Math.PI * (0.8 + 1.4 * val)) * 18); g.stroke();
+        }
+      }
+    } else {                                                 // systems page
+      g.fillStyle = '#000'; g.fillRect(x, top, sw, sh);
+      g.fillStyle = '#2bff6a'; g.font = '600 11px monospace';
+      ['FUEL  84.2', 'CAB ALT 6200', 'OAT  -56', 'GW  412.6', 'CRZ FL370'].forEach((t, k) => g.fillText(t, x + 10, top + 24 + k * 24));
+    }
+    g.restore();
+  });
+  const t = finish(c, {});
+  return t;
+}
+// overhead panel: rows of switches, a few lit
+export function makeOverheadPanelTexture() {
+  const W = 512, H = 256;
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  g.fillStyle = '#2b3138'; g.fillRect(0, 0, W, H);
+  const rng = mulberry32(19);
+  for (let y = 14; y < H - 10; y += 22) for (let x = 12; x < W - 12; x += 26) {
+    if (rng() < 0.18) continue;
+    g.fillStyle = '#14181d'; g.fillRect(x, y, 18, 13);
+    const r = rng();
+    if (r < 0.12) { g.fillStyle = '#f5f8fb'; g.fillRect(x + 3, y + 3, 12, 7); }
+    else if (r < 0.18) { g.fillStyle = '#ffb02e'; g.fillRect(x + 3, y + 3, 12, 7); }
+    else if (r < 0.24) { g.fillStyle = '#3fb0ff'; g.fillRect(x + 3, y + 3, 12, 7); }
+  }
+  g.strokeStyle = 'rgba(255,255,255,0.18)'; g.lineWidth = 2;
+  for (const x of [128, 256, 384]) { g.beginPath(); g.moveTo(x, 6); g.lineTo(x, H - 6); g.stroke(); }
+  return finish(c, {});
+}
+
 // windows + door outlines (also redrawn over the titles so they show through the letters)
 function drawOpenings(g, W, H, k = W / 4096) {
   const R = FUS.R;
@@ -170,22 +261,22 @@ function drawOpenings(g, W, H, k = W / 4096) {
     const th = Math.acos(THREE.MathUtils.clamp(y / R, -1, 1));
     return (side > 0 ? th : TAU - th) / TAU;
   };
-  const ww = (WIN.w / 71.2) * W;
+  const ww = (WIN.w / FUS.LEN) * W;
   const wh = (WIN.h / mPerV) * H;
 
-  for (const side of [1, -1]) {
-    const vc = vAt(WIN.y, side) * H;
-    for (const x of WINDOWS) {
+  for (const side of [1, -1]) for (const row of WIN_ROWS) {
+    const vc = vAt(row.y, side) * H;
+    for (const x of row.xs) {
       const px = U(x) * W;
       g.fillStyle = '#1c232d';
       rr(g, px - ww / 2, vc - wh / 2, ww, wh, ww * 0.48); g.fill();
       g.fillStyle = 'rgba(150,180,215,0.35)';
       rr(g, px - ww / 2 + 1.5 * k, vc - wh / 2 + 1.5 * k, ww - 3 * k, wh * 0.42, ww * 0.4); g.fill();
     }
-    for (const x of DOORS) {
+    for (const x of row.deck === 'upper' ? UPPER_DOORS : DOORS) {
       const px = U(x) * W;
-      const dw = (1.07 / 71.2) * W, dh = (1.86 / mPerV) * H;
-      const dv = vAt(-0.22, side) * H;
+      const dw = (1.07 / FUS.LEN) * W, dh = (1.86 / mPerV) * H;
+      const dv = vAt(row.floor + 1.03, side) * H;
       g.strokeStyle = 'rgba(40,60,78,0.45)';
       g.lineWidth = 2 * k;
       rr(g, px - dw / 2, dv - dh / 2, dw, dh, 7 * k); g.stroke();
@@ -226,7 +317,7 @@ export function decorateLivery(tex, mark, { colors, xFront = 28.4, length = 18.6
   const c = tex.image, g = c.getContext('2d');
   const W = c.width, H = c.height, R = FUS.R;
   const vOf = (y) => Math.acos(THREE.MathUtils.clamp(y / R, -1, 1)) / TAU;
-  const mPerPxU = 71.2 / W;
+  const mPerPxU = FUS.LEN / W;
   // gradient-filled wordmark: a strong Safar-blue S that lifts to a bright, slightly glassy
   // sky blue across AFAR, with the base of the letters a shade deeper (like water)
   const mw = mark.naturalWidth || mark.width, mh = mark.naturalHeight || mark.height;
@@ -260,7 +351,7 @@ export function decorateLivery(tex, mark, { colors, xFront = 28.4, length = 18.6
   const v0 = vOf(yTop), v1 = vOf(yBot);
   const h = (v1 - v0) * H;
   const w = length / mPerPxU;
-  const x1 = U(xFront) * W, cx = x1 - w / 2;
+  const x1 = U(D(xFront)) * W, cx = x1 - w / 2;
   const cyR = ((v0 + v1) / 2) * H, cyL = (1 - (v0 + v1) / 2) * H;
   g.drawImage(lc, cx - w / 2, cyR - h / 2, w, h);
   g.save(); g.translate(cx, cyL); g.rotate(Math.PI); g.drawImage(lc, -w / 2, -h / 2, w, h); g.restore();
@@ -363,14 +454,15 @@ export function decorateEngine(tex, mark, { arcLen = 6.4, circ = 11.2, centreV =
 // u matches the exterior; v runs from the cut edge (0) down to the floor (1).
 // Returns { map, emissive }
 // ---------------------------------------------------------------------------
-export function makeInnerWallTextures(aniso) {
+export function makeInnerWallTextures(aniso, row = WIN_ROWS[0]) {
   // Cool-white sidewall panels. The windows are real openings (alpha holes) framed by 3D
   // bezels built in aircraft.js, so the passenger sees the actual sky, clouds and wing.
   const W = 4096, H = 256;
   const c = makeCanvas(W, H), g = c.getContext('2d');
   const a = makeCanvas(W, H), ga = a.getContext('2d');
   const Ri = FUS.R_IN;
-  const tAt = (y) => (Math.acos(THREE.MathUtils.clamp(y / Ri, -1, 1)) - FUS.THETA_C) / (FUS.THETA_F - FUS.THETA_C);
+  const T0 = row.th0, T1 = row.th1;
+  const tAt = (y) => (Math.acos(THREE.MathUtils.clamp(y / Ri, -1, 1)) - T0) / (T1 - T0);
 
   const base = g.createLinearGradient(0, 0, 0, H);
   base.addColorStop(0, '#f5f7f9');
@@ -383,18 +475,18 @@ export function makeInnerWallTextures(aniso) {
   ga.fillRect(0, 0, W, H);
 
   // dado rail
-  const dado = tAt(-0.62) * H;
+  const dado = tAt(row.floor + 0.63) * H;
   g.fillStyle = 'rgba(120,135,155,0.35)';
   g.fillRect(0, dado, W, 2);
   // faint panel joints between window pairs
   g.fillStyle = 'rgba(120,135,155,0.12)';
-  for (let i = 0; i < WINDOWS.length; i += 2) g.fillRect(U(WINDOWS[i] - 0.31) * W, 0, 1, dado);
+  for (let i = 0; i < row.xs.length; i += 2) g.fillRect(U(row.xs[i] - 0.31) * W, 0, 1, dado);
 
-  const tc = tAt(WIN.y) * H;
-  const mPerT = (FUS.THETA_F - FUS.THETA_C) * Ri;
-  const hw = (WIN.HOLE_W / 71.2) * W, hh = (WIN.HOLE_H / mPerT) * H;
-  const bw = (WIN.BEZEL_W / 71.2) * W, bh = (WIN.BEZEL_H / mPerT) * H;
-  for (const x of WINDOWS) {
+  const tc = tAt(row.y) * H;
+  const mPerT = (T1 - T0) * Ri;
+  const hw = (WIN.HOLE_W / FUS.LEN) * W, hh = (WIN.HOLE_H / mPerT) * H;
+  const bw = (WIN.BEZEL_W / FUS.LEN) * W, bh = (WIN.BEZEL_H / mPerT) * H;
+  for (const x of row.xs) {
     const px = U(x) * W;
     // soft contact shade around the bezel
     g.save();
@@ -419,14 +511,39 @@ export function makeShellWindowMask() {
   g.fillStyle = '#fff';
   g.fillRect(0, 0, W, H);
   const R = FUS.R, mPerV = TAU * R;
-  const ww = (WIN.w / 71.2) * W, wh = (WIN.h / mPerV) * H;
+  const ww = (WIN.w / FUS.LEN) * W, wh = (WIN.h / mPerV) * H;
   g.fillStyle = '#000';
-  for (const side of [1, -1]) {
-    const th = Math.acos(WIN.y / R);
+  for (const side of [1, -1]) for (const row of WIN_ROWS) {
+    const th = Math.acos(row.y / R);
     const vc = ((side > 0 ? th : TAU - th) / TAU) * H;
-    for (const x of WINDOWS) { const px = U(x) * W; rr(g, px - ww / 2, vc - wh / 2, ww, wh, ww * 0.48); g.fill(); }
+    for (const x of row.xs) { const px = U(x) * W; rr(g, px - ww / 2, vc - wh / 2, ww, wh, ww * 0.48); g.fill(); }
   }
   const t = finish(c, { srgb: false });
+  t.flipY = false;
+  return t;
+}
+
+// Night: the cabin windows seen from outside, glowing warm (used as the paint's emissive map)
+export function makeWindowGlowTexture() {
+  const W = 4096, H = 1024;
+  const c = makeCanvas(W, H), g = c.getContext('2d');
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, W, H);
+  const R = FUS.R, mPerV = TAU * R;
+  const ww = (WIN.w / FUS.LEN) * W, wh = (WIN.h / mPerV) * H;
+  const rng = mulberry32(83);
+  for (const side of [1, -1]) for (const row of WIN_ROWS) {
+    const th = Math.acos(row.y / R);
+    const vc = ((side > 0 ? th : TAU - th) / TAU) * H;
+    for (const x of row.xs) {
+      const px = U(x) * W;
+      const shade = rng();                       // a few blinds down, a few dimmer
+      const a = shade < 0.12 ? 0.12 : shade < 0.3 ? 0.55 : 1;
+      g.fillStyle = `rgba(255,236,206,${a})`;
+      rr(g, px - ww / 2, vc - wh / 2, ww, wh, ww * 0.48); g.fill();
+    }
+  }
+  const t = finish(c, {});
   t.flipY = false;
   return t;
 }
@@ -829,4 +946,62 @@ export function makeLouvreTexture({ w = 256, h = 512 } = {}) {
   }
   g.strokeStyle = 'rgba(29,44,71,0.25)'; g.lineWidth = 2; g.strokeRect(18, top - 6, w - 36, bot - top + 12);
   return finish(c, {});
+}
+
+// The Milky Way for the night sky: an equirectangular glow along a tilted great circle, with a
+// brighter core towards the galactic centre, mottled star clouds and the dark dust rift.
+export function makeMilkyWayTexture(W = 1024, H = 512) {
+  const rng = mulberry32(1987);
+  // 3D value noise on a hashed lattice (directions are used as coordinates, so no seam)
+  const hash = (x, y, z) => { let h = (x * 374761393 + y * 668265263 + z * 2147483647) | 0; h = (h ^ (h >>> 13)) * 1274126177; return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const vnoise = (x, y, z) => {
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const fx = x - ix, fy = y - iy, fz = z - iz;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy), sz = fz * fz * (3 - 2 * fz);
+    let r = 0;
+    for (let c = 0; c < 8; c++) {
+      const dx = c & 1, dy = (c >> 1) & 1, dz = (c >> 2) & 1;
+      r += hash(ix + dx, iy + dy, iz + dz) * (dx ? sx : 1 - sx) * (dy ? sy : 1 - sy) * (dz ? sz : 1 - sz);
+    }
+    return r;
+  };
+  const fbm = (x, y, z, oct) => { let s = 0, a = 0.5, w = 0, f = 1; for (let o = 0; o < oct; o++) { s += vnoise(x * f, y * f, z * f) * a; w += a; a *= 0.5; f *= 2.03; } return s / w; };
+  // galactic plane normal (tilted so the band arcs across the sky) and the centre direction
+  const n = new THREE.Vector3(0.42, 0.55, -0.72).normalize();
+  const c0 = new THREE.Vector3(1, 0, 0).sub(n.clone().multiplyScalar(n.x)).normalize();   // in-plane
+  const img = new ImageData(W, H);
+  const d = img.data;
+  const v = new THREE.Vector3();
+  void rng;
+  for (let j = 0; j < H; j++) {
+    const lat = (0.5 - (j + 0.5) / H) * Math.PI;
+    const cl = Math.cos(lat), sl = Math.sin(lat);
+    for (let i = 0; i < W; i++) {
+      const lon = ((i + 0.5) / W - 0.5) * Math.PI * 2;
+      v.set(cl * Math.cos(lon), sl, cl * Math.sin(lon));
+      const b = Math.asin(Math.max(-1, Math.min(1, v.dot(n))));          // galactic latitude
+      const toward = (v.dot(c0) + 1) * 0.5;                             // 1 at the centre, 0 opposite
+      const wide = Math.exp(-(b * b) / (2 * 0.2 * 0.2));
+      const core = Math.exp(-(b * b) / (2 * 0.07 * 0.07));
+      const clouds = fbm(v.x * 6 + 3.1, v.y * 6 + 7.7, v.z * 6 + 1.3, 5);
+      const fine = fbm(v.x * 24, v.y * 24, v.z * 24, 3);
+      let glow = wide * (0.25 + 0.75 * Math.pow(toward, 2.2)) * (0.45 + 0.9 * clouds) + core * (0.35 + 0.65 * Math.pow(toward, 3)) * (0.5 + 0.8 * fine);
+      // dust rift: dark lanes along the centre line, broken up by noise
+      const rift = Math.exp(-((b - 0.012) * (b - 0.012)) / (2 * 0.022 * 0.022)) * Math.max(0, fbm(v.x * 11 + 9, v.y * 11, v.z * 11 + 4, 4) * 1.6 - 0.45);
+      glow *= 1 - Math.min(0.85, rift * 1.4);
+      glow = Math.max(0, glow);
+      const warm = Math.pow(toward, 3) * core;                           // the centre is slightly warmer
+      const k = Math.min(1, glow * 0.62);
+      const o = (j * W + i) * 4;
+      d[o] = Math.round(255 * k * (0.86 + 0.14 * warm));
+      d[o + 1] = Math.round(255 * k * (0.88 + 0.04 * warm));
+      d[o + 2] = Math.round(255 * k * (1.0 - 0.12 * warm));
+      d[o + 3] = 255;
+    }
+  }
+  const c = makeCanvas(W, H);
+  c.getContext('2d').putImageData(img, 0, 0);
+  const t = finish(c, {});
+  t.wrapS = THREE.RepeatWrapping;
+  return t;
 }

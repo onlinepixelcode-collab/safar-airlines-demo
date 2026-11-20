@@ -1,11 +1,19 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { FUS, fusProfile, WIN, WINDOWS, mulberry32, hashStr } from './geo.js';
+import { FUS, fusProfile, WIN, WINDOWS, WIN_ROWS, IS_DD, IS_NARROW, DOORS, UPPER_DOORS, mulberry32, hashStr } from './geo.js';
 import { CONFIG, CLASS_ORDER } from './config.js';
 import { makeFacetPanelTexture, makeBulkheadLogoTexture, makeRunnerTexture, makeBlobTexture, makeScreenTexture, makePsuTexture, makeRowLabelTexture, makeSeatFabricTexture, makeQuiltTexture, makeLouvreTexture } from './textures.js';
 
-const F = FUS.FLOOR_Y;
+// floor height of the deck being built (the double-decker has two)
+let F = FUS.FLOOR_Y;
+// which deck each cabin is on: everything on the twin; on the double-decker Economy and Premium
+// fill the main deck and The Residence, First and Business are upstairs
+export const DECK_OF = IS_DD
+  ? { economy: 'main', premium: 'main', business: 'upper', first: 'upper', residence: 'upper' }
+  : { economy: 'main', premium: 'main', business: 'main', first: 'main', residence: 'main' };
+export const floorOf = (cls) => (DECK_OF[cls] === 'upper' ? FUS.UPPER_Y : FUS.FLOOR_Y);
+const rowOf = (cls) => WIN_ROWS.find((r) => r.deck === DECK_OF[cls]) || WIN_ROWS[0];
 const ORANGE = new THREE.Color(CONFIG.brand.colors.primary);  // available seats light up in brand blue
 const HOVER = new THREE.Color(CONFIG.brand.colors.hover || '#a6ecff');
 const YOURS = new THREE.Color('#33b36b');
@@ -231,7 +239,17 @@ function firstSuite(doorSide, windowSide = false) {
 
 // ---------- layout ----------
 // x positions (nose is +X). Zones are where each class lives on the floor.
-export const ZONES = {
+export const ZONES = IS_NARROW ? {
+  business: { x0: 10.3, x1: 14.0 },
+  economy: { x0: -12.4, x1: 9.2 },
+  premium: { x0: 0, x1: 0 }, first: { x0: 0, x1: 0 }, residence: { x0: 19.0, x1: 26.0 },
+} : IS_DD ? {
+  residence: { x0: 19.0, x1: 26.0 },     // upper deck, at the front
+  first: { x0: 12.4, x1: 17.8 },
+  business: { x0: -12.5, x1: 11.0 },
+  premium: { x0: 18.3, x1: 27.1 },       // main deck, at the front
+  economy: { x0: -21.4, x1: 14.8 },
+} : {
   residence: { x0: 19.0, x1: 26.0 },
   first: { x0: 12.4, x1: 17.8 },
   business: { x0: 2.6, x1: 11.0 },
@@ -239,7 +257,40 @@ export const ZONES = {
   economy: { x0: -20.8, x1: -6.6 },
 };
 
+// seat rows that keep the cross-aisles at the doors clear
+function rowPositions(start, pitch, stop, doors, clear) {
+  const out = [];
+  for (let x = start; x > stop; x -= pitch) if (!doors.some((d) => Math.abs(d - x) < clear)) out.push(+x.toFixed(3));
+  return out;
+}
+const NB_ROWS = IS_NARROW ? {
+  economy: rowPositions(8.7, 0.79, -12.2, [0.4], 0.62),
+  business: rowPositions(13.5, 0.97, 10.4, [], 1),
+} : null;
+const DD_ROWS = IS_DD ? {
+  economy: rowPositions(14.3, 0.81, -21.2, DOORS, 1.05),
+  premium: rowPositions(26.6, 0.97, 18.4, DOORS, 1.0),
+  business: rowPositions(10.15, 1.68, -12.6, UPPER_DOORS, 1.1),
+} : null;
+const firstRow = { economy: 31, premium: 21, business: 3 };
 function rowsFor(cls) {
+  if (IS_NARROW && NB_ROWS[cls]) {
+    const xs = NB_ROWS[cls], r0 = cls === 'economy' ? 6 : 1;
+    const rows = xs.map((_, i) => r0 + i);
+    const x = (r) => xs[r - r0];
+    // single aisle: Economy 3-3, Business 2-2 recliners
+    if (cls === 'economy') return { rows, x, cols: [['A', -1.47], ['B', -0.99], ['C', -0.51], ['D', 0.51], ['E', 0.99], ['F', 1.47]], window: 'AF', aisle: 'CD' };
+    return { rows, x, cols: [['A', -1.12], ['C', -0.6], ['D', 0.6], ['F', 1.12]], window: 'AF', aisle: 'CD' };
+  }
+  if (IS_DD && DD_ROWS[cls]) {
+    const xs = DD_ROWS[cls], r0 = firstRow[cls];
+    const rows = xs.map((_, i) => r0 + i);
+    const x = (r) => xs[r - r0];
+    // economy 3-4-3 (ten across), premium 2-4-2, business 1-2-1 with wide aisles
+    if (cls === 'economy') return { rows, x, cols: [['A', -2.86], ['B', -2.37], ['C', -1.88], ['D', -0.735], ['E', -0.245], ['F', 0.245], ['G', 0.735], ['H', 1.88], ['J', 2.37], ['K', 2.86]], window: 'AK', aisle: 'CDGH' };
+    if (cls === 'premium') return { rows, x, cols: [['A', -2.6], ['C', -2.05], ['D', -0.84], ['E', -0.28], ['F', 0.28], ['G', 0.84], ['H', 2.05], ['K', 2.6]], window: 'AK', aisle: 'CDGH' };
+    return { rows, x, cols: [['A', -2.5], ['E', -0.62], ['F', 0.62], ['K', 2.5]], window: 'AK', aisle: 'EF' };
+  }
   switch (cls) {
     case 'economy': return { rows: range(20, 36), x: (r) => -7.0 - (r - 20) * 0.81, cols: [['A', -2.34], ['B', -1.88], ['C', -1.42], ['D', -0.46], ['E', 0], ['F', 0.46], ['H', 1.42], ['J', 1.88], ['K', 2.34]], window: 'AK', aisle: 'CDFH' };
     case 'premium': return { rows: range(11, 16), x: (r) => 0.45 - (r - 11) * 0.97, cols: [['A', -2.3], ['C', -1.78], ['D', -0.78], ['E', -0.26], ['F', 0.26], ['G', 0.78], ['H', 1.78], ['K', 2.3]], window: 'AK', aisle: 'CDGH' };
@@ -286,9 +337,15 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
   const classes = {};
   const pickables = {};
   const zoneMeshes = [];
+  // the double-decker's upper deck is its own group, so it can be lifted away to show the main deck
+  const upperGroup = new THREE.Group();
+  upperGroup.name = 'upperDeck';
+  group.add(upperGroup);
+  const into = (cls) => (DECK_OF[cls] === 'upper' ? upperGroup : group);
 
   // ---------- seats ----------
-  const designs = { economy: economySeat(), premium: premiumSeat(), business: businessPod() };
+  // (the double-decker has 400 Economy seats: they are built a little lighter)
+  const designs = { economy: (() => { const k = SEG_MAX; if (IS_DD) SEG_MAX = 1; const d = economySeat(); SEG_MAX = k; return d; })(), premium: premiumSeat(), business: IS_NARROW ? premiumSeat() : businessPod() };
   // Safar cabin palette: navy and white seats, sky-blue headrest covers, navy gloss pods
   const palette = {
     economy: { fabric: '#46556f', shell: '#eef1f5', trim: '#262b33', accent: '#f4f7fa' },
@@ -301,6 +358,7 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
   const screenMat = new THREE.MeshStandardMaterial({ color: 0x050a12, roughness: 0.12, metalness: 0, emissive: 0xffffff, emissiveMap: screenTex, emissiveIntensity: 0.95 });
   const screenImg = new Image();
   screenImg.onload = () => {
+    if (screenMat.userData.live) return;          // the live seat-screen pages have taken over
     const t = makeScreenTexture(screenImg);
     screenMat.emissiveMap = t; screenMat.needsUpdate = true;
     screenTex.dispose();
@@ -319,7 +377,8 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
   fabricTex.repeat.set(5, 5);
   const quiltTex = makeQuiltTexture();
   quiltTex.repeat.set(2.2, 2.2);
-  for (const cls of ['economy', 'premium', 'business']) {
+  for (const cls of ['economy', 'premium', 'business'].filter((k) => CLASS_ORDER.includes(k))) {
+    F = floorOf(cls);
     const layout = rowsFor(cls);
     const d = designs[cls];
     const list = [];
@@ -374,7 +433,7 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
       m.instanceMatrix.needsUpdate = true;
       m.computeBoundingSphere();
       m.userData.cls = cls;
-      group.add(m);
+      into(cls).add(m);
     }
     fabric.instanceColor.needsUpdate = true;
     classes[cls] = { id: cls, seats: clsSeats, fabric, base, hl: 0, dirty: true };
@@ -382,7 +441,8 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
   }
 
   // ---------- First suites ----------
-  {
+  if (CLASS_ORDER.includes('first')) {
+    F = floorOf('first');
     const layout = rowsFor('first');
     const clsSeats = [];
     const wallBase = new THREE.Color('#ffffff');
@@ -422,7 +482,7 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
         }
         const x = layout.x(r);
         g.position.set(x, F, z);
-        group.add(g);
+        into('first').add(g);
         const id = `${r}${L}`;
         const seat = {
           id, cls: 'first', row: r, letter: L, index: clsSeats.length,
@@ -441,7 +501,8 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
   }
 
   // ---------- The Residence ----------
-  {
+  if (CLASS_ORDER.includes('residence')) {
+    F = floorOf('residence');
     const z0 = ZONES.residence.x0, z1 = ZONES.residence.x1;
     const g = new THREE.Group();
     const resPanel = makeFacetPanelTexture({ size: 512, seed: 33, strength: 0.58, cols: 6, rows: 6 });
@@ -514,7 +575,7 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
     const mStone = mk(stoneParts, stone);
     g.add(glassPanel, glassPanel2, mirror, tvScreen);
     g.position.y = F;
-    group.add(g);
+    into('residence').add(g);
     const seat = {
       id: 'RES', cls: 'residence', row: 0, letter: '', index: 0,
       pos: new THREE.Vector3(24.5, F, zc), side: 1, window: true, aisle: false,
@@ -544,7 +605,8 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
     const sideMat = new THREE.MeshPhysicalMaterial({ map: panel, roughness: 0.32, clearcoat: 0.6, clearcoatRoughness: 0.2 });
     const topMat = new THREE.MeshStandardMaterial({ color: '#f4f6f9', roughness: 0.6 });
     const steel = new THREE.MeshStandardMaterial({ color: '#c3c8cf', roughness: 0.3, metalness: 0.7 });
-    const blocks = [
+    F = FUS.FLOOR_Y;
+    const blocks = IS_DD || IS_NARROW ? [] : [
       // [x0, x1, zFrom, zTo]
       [26.05, 27.5, -2.3, -0.5], [26.05, 27.5, 0.5, 2.3],
       [17.85, 18.95, -2.35, -0.55], [17.85, 18.95, 0.6, 2.35],
@@ -566,14 +628,25 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
       group.add(m);
       steelParts.push(part(0.02, 1.2, (zb - za) * 0.7, b + 0.005, F + 0.85, (za + zb) / 2, { round: 0 }));
     }
-    const m2 = new THREE.Mesh(merge(steelParts), steel);
-    m2.castShadow = true; m2.receiveShadow = true; group.add(m2);
+    if (steelParts.length) {
+      const m2 = new THREE.Mesh(merge(steelParts), steel);
+      m2.castShadow = true; m2.receiveShadow = true; group.add(m2);
+    }
   }
 
   // ---------- aisle runners with SAFAR inlays, LED path lights ----------
   const runnerMats = [];
   {
-    const aisles = [
+    const aisles = IS_NARROW ? [
+      [-12.3, 9.1, 0, 0.46], [10.4, 13.9, 0, 0.5],
+    ] : IS_DD ? [
+      // [x0, x1, z, width, deck]
+      [-21.3, 14.7, -1.31, 0.5, 'main'], [-21.3, 14.7, 1.31, 0.5, 'main'],
+      [18.4, 27.0, -1.445, 0.5, 'main'], [18.4, 27.0, 1.445, 0.5, 'main'],
+      [-12.4, 10.95, -1.56, 0.56, 'upper'], [-12.4, 10.95, 1.56, 0.56, 'upper'],
+      [12.45, 17.75, -0.96, 0.6, 'upper'], [12.45, 17.75, 0.96, 0.6, 'upper'],
+      [19.05, 25.95, -2.13, 0.7, 'upper'],
+    ] : [
       // [x0, x1, z, width]
       [-20.8, -6.7, -0.94, 0.44], [-20.8, -6.7, 0.94, 0.44],
       [-5.1, 0.95, -1.28, 0.44], [-5.1, 0.95, 1.28, 0.44],
@@ -582,8 +655,9 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
       [19.05, 25.95, -2.13, 0.7],
     ];
     const runnerTex = makeRunnerTexture(null);
-    const led = [];
-    for (const [x0, x1, z, w] of aisles) {
+    const led = [], ledUp = [];
+    for (const [x0, x1, z, w, deck = 'main'] of aisles) {
+      F = deck === 'upper' ? FUS.UPPER_Y : FUS.FLOOR_Y;
       const len = x1 - x0;
       const tex = runnerTex.clone();
       tex.repeat.set(len / 8, 1);
@@ -595,13 +669,15 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
       const m = new THREE.Mesh(g, mat);
       m.position.set((x0 + x1) / 2, F + 0.004, z);
       m.receiveShadow = true;
-      group.add(m);
-      for (const e of [-1, 1]) led.push(part(len, 0.008, 0.016, (x0 + x1) / 2, 0.006, z + e * (w / 2 - 0.012), { round: 0 }));
+      (deck === 'upper' ? upperGroup : group).add(m);
+      for (const e of [-1, 1]) (deck === 'upper' ? ledUp : led).push(part(len, 0.008, 0.016, (x0 + x1) / 2, 0.006, z + e * (w / 2 - 0.012), { round: 0 }));
     }
+    F = FUS.FLOOR_Y;
     const ledMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.14, 0.62, 1.0).multiplyScalar(glow * 0.5) });
     const ledMesh = new THREE.Mesh(merge(led), ledMat);
-    ledMesh.position.y = F;
+    ledMesh.position.y = FUS.FLOOR_Y;
     group.add(ledMesh);
+    if (ledUp.length) { const lu = new THREE.Mesh(merge(ledUp), ledMat); lu.position.y = FUS.UPPER_Y; upperGroup.add(lu); }
     // swap in the logo versions once the wordmark has loaded
     const im = new Image();
     im.onload = () => {
@@ -619,6 +695,8 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
   }
 
   // ---------- overhead: centre bins, reading-light panels and row numbers ----------
+  // (twin only: the double-decker's bins are part of its airframe)
+  if (!IS_DD && !IS_NARROW)
   // A real widebody has a row of bins over the middle seats too, and under every bin a panel
   // per seat row with reading lights, air nozzles and the seat-belt sign; the row number and
   // seat letters are printed on the bin edge above each row.
@@ -715,21 +793,202 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
     const blobTex = makeBlobTexture(128);
     const blobMat = new THREE.MeshBasicMaterial({ map: blobTex, color: 0x000000, transparent: true, opacity: 0.5, depthWrite: false });
     blobMat.polygonOffset = true; blobMat.polygonOffsetFactor = -1;
-    const list = seats.filter((s) => s.cls !== 'residence');
     const blobGeo = new THREE.PlaneGeometry(1, 1);
     blobGeo.rotateX(-Math.PI / 2);
-    const blobs = new THREE.InstancedMesh(blobGeo, blobMat, list.length);
-    const o = new THREE.Object3D();
-    list.forEach((s, i) => {
-      const [fx, fz] = s.footprint;
-      o.position.set(s.pos.x - (s.cls === 'economy' || s.cls === 'premium' ? 0.06 : 0), F + 0.006, s.pos.z);
-      o.scale.set(fx * 1.25, 1, fz * 1.3);
-      o.updateMatrix();
-      blobs.setMatrixAt(i, o.matrix);
-    });
-    blobs.instanceMatrix.needsUpdate = true;
-    blobs.renderOrder = 1;
-    group.add(blobs);
+    for (const deck of IS_DD ? ['main', 'upper'] : ['main']) {
+      const list = seats.filter((s) => s.cls !== 'residence' && DECK_OF[s.cls] === deck);
+      if (!list.length) continue;
+      const blobs = new THREE.InstancedMesh(blobGeo, blobMat, list.length);
+      const o = new THREE.Object3D();
+      list.forEach((s, i) => {
+        const [fx, fz] = s.footprint;
+        o.position.set(s.pos.x - (s.cls === 'economy' || s.cls === 'premium' ? 0.06 : 0), s.pos.y + 0.006, s.pos.z);
+        o.scale.set(fx * 1.25, 1, fz * 1.3);
+        o.updateMatrix();
+        blobs.setMatrixAt(i, o.matrix);
+      });
+      blobs.instanceMatrix.needsUpdate = true;
+      blobs.renderOrder = 1;
+      (deck === 'upper' ? upperGroup : group).add(blobs);
+    }
+  }
+
+  // ---------- lavatories and galleys ----------
+  // Where a long-haul twin has them: a galley and lavatories at the back, lavatories between the
+  // cabins, a galley at the mid doors and at the front by the flight deck. They are open at the
+  // top like the rest of the cutaway, so from the cabin map you look into them: toilet, basin,
+  // galley counters, ovens and the meal trolleys, each marked with a small sign.
+  {
+    const mats = {
+      wall: new THREE.MeshStandardMaterial({ color: 0xf1f4f7, roughness: 0.55 }),
+      door: new THREE.MeshStandardMaterial({ color: 0xd6dde5, roughness: 0.5 }),
+      china: new THREE.MeshPhysicalMaterial({ color: 0xfcfdfe, roughness: 0.16, clearcoat: 0.7, clearcoatRoughness: 0.1 }),
+      steel: new THREE.MeshStandardMaterial({ color: 0xc8ced5, metalness: 0.85, roughness: 0.28 }),
+      counter: new THREE.MeshStandardMaterial({ color: 0x7f8a97, roughness: 0.42 }),
+      trolley: new THREE.MeshStandardMaterial({ color: 0xb6bfc9, metalness: 0.55, roughness: 0.32 }),
+      floor: new THREE.MeshStandardMaterial({ color: 0xc9d1da, roughness: 0.8 }),
+    };
+    let G = Object.fromEntries(Object.keys(mats).map((k) => [k, []]));
+    const H = 1.88, T = 0.045;
+    let signs = [];
+    // a lavatory filling [x0,x1] x [z0,z1]; the door is on the x face given by doorAt (x0 or x1)
+    const lav = (x0, x1, z0, z1, doorAt) => {
+      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, w = x1 - x0, d = z1 - z0;
+      G.floor.push(part(w - 0.02, 0.012, d - 0.02, cx, F + 0.006, cz, { round: 0 }));
+      G.wall.push(part(T, H, d, x0 + T / 2, F + H / 2, cz, { round: 0.01 }), part(T, H, d, x1 - T / 2, F + H / 2, cz, { round: 0.01 }));
+      G.wall.push(part(w, H, T, cx, F + H / 2, z0 + T / 2, { round: 0.01 }), part(w, H, T, cx, F + H / 2, z1 - T / 2, { round: 0.01 }));
+      // the door: a recessed panel with its handle on the side facing the cabin
+      const dx = doorAt === x0 ? x0 - 0.004 : x1 + 0.004, dirX = doorAt === x0 ? -1 : 1;
+      const dw = Math.min(0.66, d - 0.16);
+      G.door.push(part(0.03, 1.78, dw, dx, F + 0.92, cz, { round: 0.012 }));
+      G.steel.push(part(0.03, 0.03, 0.14, dx + dirX * 0.02, F + 1.0, cz + dw * 0.32, { round: 0.01 }));
+      // toilet at the far end, basin on the side
+      const bx = doorAt === x0 ? x1 - 0.32 : x0 + 0.32;
+      G.china.push(part(0.44, 0.4, 0.38, bx, F + 0.2, cz - d * 0.12, { round: 0.12, seg: 3 }));
+      G.china.push(part(0.14, 0.52, 0.42, bx + (doorAt === x0 ? 0.2 : -0.2), F + 0.42, cz - d * 0.12, { round: 0.04 }));
+      G.counter.push(part(Math.min(0.5, w * 0.45), 0.07, 0.4, cx, F + 0.84, z1 - 0.24 - T, { round: 0.02 }));
+      G.china.push(part(0.3, 0.06, 0.24, cx, F + 0.885, z1 - 0.24 - T, { round: 0.03 }));
+      G.steel.push(part(Math.min(0.5, w * 0.45), 0.5, 0.02, cx, F + 1.3, z1 - T - 0.012, { round: 0 }));   // mirror
+      signs.push([cx, cz, 'wc']);
+    };
+    // a galley: counters and meal trolleys along the wall at x = backAt, the crew working space in front
+    const galley = (x0, x1, z0, z1, backAt) => {
+      const cz = (z0 + z1) / 2, d = z1 - z0, dirX = backAt === x0 ? 1 : -1;
+      const depth = Math.min(0.78, (x1 - x0) * 0.6);
+      const fx = backAt + dirX * depth;                               // front face of the counters
+      G.counter.push(part(depth, 1.0, d, backAt + dirX * depth / 2, F + 0.5, cz, { round: 0.02 }));
+      G.steel.push(part(depth + 0.02, 0.04, d + 0.02, backAt + dirX * depth / 2, F + 1.02, cz, { round: 0.01 }));
+      const nT = Math.max(2, Math.floor(d / 0.34));
+      for (let i = 0; i < nT; i++) {
+        const z = z0 + (i + 0.5) * (d / nT);
+        G.trolley.push(part(0.04, 0.84, d / nT - 0.04, fx + dirX * 0.02, F + 0.46, z, { round: 0.01 }));
+      }
+      // ovens and stowage above
+      const ud = 0.42;
+      G.counter.push(part(ud, H - 1.24, d, backAt + dirX * ud / 2, F + 1.24 + (H - 1.24) / 2, cz, { round: 0.02 }));
+      const nO = Math.max(2, Math.floor(d / 0.42));
+      for (let i = 0; i < nO; i++) for (let j = 0; j < 2; j++) {
+        const z = z0 + (i + 0.5) * (d / nO);
+        G.steel.push(part(0.02, 0.26, d / nO - 0.06, backAt + dirX * (ud + 0.01), F + 1.36 + j * 0.3, z, { round: 0.008 }));
+      }
+      G.wall.push(part(Math.abs(fx - backAt) + 0.4, H, T, (backAt + fx) / 2 + dirX * 0.2, F + H / 2, z0 + T / 2, { round: 0.01 }));
+      G.wall.push(part(Math.abs(fx - backAt) + 0.4, H, T, (backAt + fx) / 2 + dirX * 0.2, F + H / 2, z1 - T / 2, { round: 0.01 }));
+      signs.push([(backAt + fx) / 2 + dirX * 0.25, cz, 'galley']);
+    };
+    const hw = (x) => halfWidthAt(x, F + 0.9) - 0.12;
+    // lounge bar (double-decker, at the back of the upper deck): a lit bar counter with shelves
+    // behind it and curved sofas along both sides
+    const lounge = (x0, x1) => {
+      const cx = (x0 + x1) / 2;
+      G.counter.push(part(2.6, 1.04, 0.62, cx, F + 0.52, 0, { round: 0.08, seg: 3 }));
+      G.steel.push(part(2.7, 0.05, 0.72, cx, F + 1.07, 0, { round: 0.02 }));
+      G.wall.push(part(0.3, 1.5, 1.6, x0 + 0.3, F + 0.75, 0, { round: 0.04 }));
+      G.steel.push(part(0.04, 0.03, 1.4, x0 + 0.47, F + 1.1, 0, { round: 0.01 }), part(0.04, 0.03, 1.4, x0 + 0.47, F + 1.4, 0, { round: 0.01 }));
+      for (const k of [-1, 1]) {
+        const z = k * (hw(cx) - 0.55);
+        G.trolley.push(part(x1 - x0 - 1.6, 0.42, 0.62, cx + 0.3, F + 0.21, z, { round: 0.1, seg: 3 }));
+        G.trolley.push(part(x1 - x0 - 1.6, 0.6, 0.16, cx + 0.3, F + 0.62, z + k * 0.26, { round: 0.07, seg: 3 }));
+      }
+      signs.push([cx + 1.6, 0, 'galley']);
+    };
+    const groups = [];
+    const flush = (target) => {
+      for (const [k, list] of Object.entries(G)) {
+        if (!list.length) continue;
+        const m = new THREE.Mesh(merge(list), mats[k]);
+        m.castShadow = k !== 'floor'; m.receiveShadow = true;
+        m.name = `service-${k}`;
+        target.add(m);
+      }
+
+      G = Object.fromEntries(Object.keys(mats).map((k) => [k, []]));
+    };
+    if (IS_NARROW) {
+      // galley and a lavatory at the front by the flight deck, galley and two lavatories at the back
+      F = FUS.FLOOR_Y;
+      galley(14.3, 15.45, 0.05, 1.45, 15.45);
+      lav(14.3, 15.45, -1.45, -0.1, 14.3);
+      galley(-13.55, -12.7, -1.15, 1.15, -13.55);
+      lav(-13.55, -12.7, 1.22, Math.min(1.75, hw(-13.1)), -12.7);
+      lav(-13.55, -12.7, -Math.min(1.75, hw(-13.1)), -1.22, -12.7);
+      flush(group);
+      groups.push([signs, FUS.FLOOR_Y, group]);
+    } else if (IS_DD) {
+      // main deck: galley at the front, lavatories by door 2, galley and lavatories behind the last row
+      F = FUS.FLOOR_Y;
+      galley(27.75, 29.4, -1.25, 1.25, 29.4);
+      lav(16.6, 17.95, -1.0, 0.0, 17.95);
+      lav(16.6, 17.95, 0.0, 1.0, 16.6);
+      galley(-24.1, -23.05, -1.3, 1.3, -24.1);
+      lav(-24.1, -23.05, 1.4, Math.min(2.5, hw(-23.6)), -23.05);
+      lav(-24.1, -23.05, -Math.min(2.5, hw(-23.6)), -1.4, -23.05);
+      flush(group);
+      const mainSigns = signs; signs = [];
+      // upper deck: galley and lavatory at the front, lavatories between the suites and the
+      // cabins, and the lounge bar with a galley at the back
+      F = FUS.UPPER_Y;
+      galley(26.05, 27.75, -0.2, 1.7, 27.75);
+      lav(26.05, 27.75, -1.7, -0.3, 26.05);
+      lav(17.85, 18.95, -0.6, 0.6, 17.85);
+      lav(11.05, 12.35, -0.95, 0.0, 11.05);
+      lav(11.05, 12.35, 0.0, 0.95, 12.35);
+      lounge(-18.3, -13.2);
+      galley(-20.5, -19.55, -1.3, 1.3, -20.5);
+      flush(upperGroup);
+      groups.push([mainSigns, FUS.FLOOR_Y, group], [signs, FUS.UPPER_Y, upperGroup]);
+    } else {
+      // aft: galley across the middle, a lavatory each side
+      galley(-22.35, -20.85, -1.15, 1.15, -22.35);
+      lav(-22.35, -21.05, 1.25, Math.min(2.25, hw(-21.7)), -21.05);
+      lav(-22.35, -21.05, -Math.min(2.25, hw(-21.7)), -1.25, -21.05);
+      // between Economy and Premium: two lavatories back to back
+      lav(-6.55, -5.25, -1.0, 0.0, -6.55);
+      lav(-6.55, -5.25, 0.0, 1.0, -5.25);
+      // mid doors: galley in the middle
+      galley(1.05, 2.55, -1.1, 1.1, 1.05);
+      // between Business and First: lavatories
+      lav(11.05, 12.35, -0.95, 0.0, 11.05);
+      lav(11.05, 12.35, 0.0, 0.95, 12.35);
+      // between First and The Residence: one lavatory
+      lav(17.85, 18.95, -0.6, 0.6, 17.85);
+      // front: galley by the flight deck and a lavatory on the left
+      galley(26.05, 27.55, -0.2, 1.6, 27.55);
+      lav(26.05, 27.55, -1.6, -0.3, 26.05);
+
+      flush(group);
+      groups.push([signs, FUS.FLOOR_Y, group]);
+    }
+    // signs on top, seen from the cabin map
+    const icon = (kind) => {
+      const S = 128, c = document.createElement('canvas'); c.width = c.height = S;
+      const g = c.getContext('2d');
+      g.fillStyle = 'rgba(14,30,48,0.88)'; g.beginPath(); g.roundRect(6, 6, S - 12, S - 12, 26); g.fill();
+      g.fillStyle = '#ffffff'; g.strokeStyle = '#ffffff'; g.lineWidth = 7; g.lineCap = 'round';
+      if (kind === 'wc') {
+        for (const [x, skirt] of [[44, false], [84, true]]) {
+          g.beginPath(); g.arc(x, 36, 9, 0, 6.3); g.fill();
+          if (skirt) { g.beginPath(); g.moveTo(x, 50); g.lineTo(x - 15, 82); g.lineTo(x + 15, 82); g.closePath(); g.fill(); g.fillRect(x - 7, 80, 5, 18); g.fillRect(x + 2, 80, 5, 18); }
+          else { g.fillRect(x - 11, 50, 22, 30); g.fillRect(x - 10, 78, 8, 22); g.fillRect(x + 2, 78, 8, 22); }
+        }
+        g.fillRect(63, 30, 2, 70);
+      } else {
+        g.beginPath(); g.moveTo(36, 46); g.lineTo(84, 46); g.lineTo(78, 92); g.lineTo(42, 92); g.closePath(); g.fill();
+        g.beginPath(); g.arc(88, 62, 11, -1.4, 1.4); g.stroke();
+        for (const x of [50, 60, 70]) { g.beginPath(); g.moveTo(x, 36); g.quadraticCurveTo(x + 5, 28, x, 20); g.stroke(); }
+      }
+      const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+      return t;
+    };
+    const iconMats = { wc: new THREE.MeshBasicMaterial({ map: icon('wc'), transparent: true, depthWrite: false }), galley: new THREE.MeshBasicMaterial({ map: icon('galley'), transparent: true, depthWrite: false }) };
+    const sg = new THREE.PlaneGeometry(0.42, 0.42);
+    sg.rotateX(-Math.PI / 2);
+    for (const [list, floorY, target] of groups) for (const [x, z, kind] of list) {
+      const m = new THREE.Mesh(sg, iconMats[kind]);
+      m.position.set(x, floorY + H + 0.03, z);
+      m.renderOrder = 3;
+      m.name = `sign-${kind}`;
+      target.add(m);
+    }
   }
 
   // ---------- invisible zones for class picking ----------
@@ -738,23 +997,27 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
     const cx = (z.x0 + z.x1) / 2;
     const hw = halfWidthAt(cx);
     const box = new THREE.Mesh(new THREE.BoxGeometry(z.x1 - z.x0, 2.2, hw * 2), new THREE.MeshBasicMaterial());
-    box.position.set(cx, F + 1.0, 0);
+    box.position.set(cx, floorOf(cls) + 1.0, 0);
     box.visible = false;
     box.userData.cls = cls;
+    box.userData.deck = DECK_OF[cls];
     group.add(box);
     zoneMeshes.push(box);
-    classes[cls].zone = { ...z, cx, hw, centre: new THREE.Vector3(cx, F, 0) };
+    classes[cls].zone = { ...z, cx, hw, deck: DECK_OF[cls], centre: new THREE.Vector3(cx, floorOf(cls), 0) };
   }
 
   // ---------- availability (deterministic) ----------
-  for (const cls of ['economy', 'premium', 'business', 'first']) {
+  for (const cls of ['economy', 'premium', 'business', 'first'].filter((k) => CLASS_ORDER.includes(k))) {
     const c = classes[cls];
     const conf = CONFIG.classes[cls];
     const rng = mulberry32(hashStr(cls) ^ 0x9e3779b9);
     const featured = byId.get(conf.featured);
     const pool = c.seats.filter((s) => s !== featured);
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
-    const free = Math.max(0, Math.min(c.seats.length, conf.available) - (featured ? 1 : 0));
+    // `available` is set for the twin's cabin; a bigger cabin keeps the same share of free seats
+    const twinSeats = { economy: 153, premium: 48, business: 20, first: 6 }[cls];   // the twin's cabins
+    const avail = IS_DD || IS_NARROW ? Math.round((conf.available / twinSeats) * c.seats.length) : conf.available;
+    const free = Math.max(0, Math.min(c.seats.length, avail) - (featured ? 1 : 0));
     pool.forEach((s, i) => { s.booked = i >= free; });
     if (featured) featured.booked = false;
   }
@@ -782,6 +1045,17 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
   const tmpC = new THREE.Color();
   const bookedC = new THREE.Color();
 
+  // seats picked together for a group of travellers
+  let groupSet = new Set();
+  // the seats in a row, split into blocks by the aisles
+  const rowBlocks = (cls, row) => {
+    const arr = classes[cls].seats.filter((q) => q.row === row).sort((a, b) => a.pos.z - b.pos.z);
+    const blocks = [];
+    let cur = [];
+    for (const q of arr) { if (cur.length && q.pos.z - cur[cur.length - 1].pos.z > 0.75) { blocks.push(cur); cur = []; } cur.push(q); }
+    if (cur.length) blocks.push(cur);
+    return { arr, blocks };
+  };
   function refreshColors(cls) {
     const c = classes[cls];
     if (cls === 'first' || cls === 'residence') {
@@ -803,6 +1077,7 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
     const m = c.fabric;
     for (const s of c.seats) {
       if (s.yours) { m.setColorAt(s.index, YOURS); continue; }
+      if (groupSet.has(s) && !s.booked) { m.setColorAt(s.index, HOVER); continue; }
       if (s === hoverSeat) { m.setColorAt(s.index, s.booked ? bookedC.copy(c.base).multiplyScalar(0.55) : HOVER); continue; }
       if (s.booked) {
         bookedC.copy(c.base).multiplyScalar(1 - 0.42 * c.hl);
@@ -818,8 +1093,8 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
 
   // ---------- API ----------
   const api = {
-    group, seats, byId, classes, pickables, zoneMeshes,
-    ZONES,
+    group, seats, byId, classes, pickables, zoneMeshes, upperGroup, screenMat,
+    ZONES, DECK_OF,
     seatFromHit(hit) {
       if (!hit) return null;
       const o = hit.object;
@@ -841,6 +1116,7 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
       const z = classes[cls].zone;
       classRing.geometry = ringGeo(z.x1 - z.x0 + 0.1, z.hw * 2 - 0.12, 0.07, 0.4);
       classRing.position.x = z.cx;
+      classRing.position.y = z.centre.y + 0.02;
       classRing.position.z = 0;
       glowMat.opacity = opacity;
     },
@@ -853,7 +1129,7 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
         const [w, d] = seat.footprint;
         seatRing.geometry = ringGeo(w + 0.12, d + 0.12, seat.cls === 'residence' ? 0.07 : 0.045, 0.12);
         const c = seat.ringCentre || seat.pos;
-        seatRing.position.set(seat.cls === 'economy' || seat.cls === 'premium' ? c.x - 0.02 : c.x, F + 0.025, c.z);
+        seatRing.position.set(seat.cls === 'economy' || seat.cls === 'premium' ? c.x - 0.02 : c.x, seat.pos.y + 0.025, c.z);
         seatGlowMat.opacity = 1;
       } else {
         seatGlowMat.opacity = 0;
@@ -865,6 +1141,56 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
       seat.yours = true;
       seat.booked = true;
       refreshColors(seat.cls);
+    },
+    // a group of travellers: n free seats side by side that include `seat`, kept within one block
+    // between the aisles if possible, otherwise across an aisle in the same row
+    groupAround(seat, n) {
+      if (!seat || n <= 1 || !classes[seat.cls].fabric) return null;
+      const { arr, blocks } = rowBlocks(seat.cls, seat.row);
+      for (const run of [blocks.find((b) => b.includes(seat)), arr]) {
+        const i = run.indexOf(seat);
+        for (let start = Math.max(0, i - n + 1); start <= Math.min(i, run.length - n); start++) {
+          const pick = run.slice(start, start + n);
+          if (pick.every((q) => !q.booked || q.yours)) return pick;
+        }
+      }
+      return null;
+    },
+    // the best n seats together in a cabin: one block, towards the front, a window if it fits
+    findTogether(cls, n) {
+      const c = classes[cls];
+      if (!c.fabric) return null;
+      let best = null, bestScore = -Infinity;
+      const rows = [...new Set(c.seats.map((q) => q.row))];
+      for (const row of rows) {
+        const { arr, blocks } = rowBlocks(cls, row);
+        const tryRun = (run, penalty) => {
+          for (let i = 0; i + n <= run.length; i++) {
+            const pick = run.slice(i, i + n);
+            if (pick.some((q) => q.booked)) continue;
+            let score = -penalty - row * 0.4;
+            if (n <= 3 && pick.some((q) => q.window)) score += 3;
+            if (pick.length === run.length) score += 1.5;
+            if (score > bestScore) { bestScore = score; best = pick; }
+          }
+        };
+        for (const b of blocks) tryRun(b, 0);
+        tryRun(arr, 40);
+      }
+      return best;
+    },
+    setGroup(list) {
+      const touched = new Set([...groupSet].map((q) => q.cls));
+      groupSet = new Set(list || []);
+      for (const q of groupSet) touched.add(q.cls);
+      for (const k of touched) refreshColors(k);
+    },
+    markYoursGroup(list) {
+      const cls = list[0].cls;
+      for (const q of classes[cls].seats) q.yours = false;
+      for (const q of list) { q.yours = true; q.booked = true; }
+      groupSet = new Set();
+      refreshColors(cls);
     },
     freeCount(cls) {
       return classes[cls].seats.filter((s) => !s.booked).length;
@@ -879,7 +1205,8 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
       }
       const side = seat.side;
       const head = { economy: [-0.1, 1.3], premium: [-0.14, 1.34], business: [-0.42, 1.3], first: [-0.72, 1.32] }[seat.cls];
-      const eye = new THREE.Vector3(seat.pos.x + head[0], F + head[1], seat.pos.z - side * 0.03);
+      const eye = new THREE.Vector3(seat.pos.x + head[0], seat.pos.y + head[1], seat.pos.z - side * 0.03);
+      const wr = rowOf(seat.cls);
       let yaw, pitch;
       if (seat.window) {
         // half-turned to the window: the window beside you, the seat in front and the cabin
@@ -889,10 +1216,11 @@ export function buildCabin({ glow = 3.2, lowPoly = false, fade = null } = {}) {
         if (portrait) {
           // a phone screen is narrow: look straight at the nearest window just ahead
           const want = eye.x + 0.5;
-          const wx = WINDOWS.reduce((b, x) => (Math.abs(x - want) < Math.abs(b - want) ? x : b), WINDOWS[0]);
-          yaw = THREE.MathUtils.clamp(Math.atan2(Math.abs(side * 2.72 - eye.z), Math.max(0.2, wx - eye.x)), 0.45, 1.25);
+          const wx = wr.xs.reduce((b, x) => (Math.abs(x - want) < Math.abs(b - want) ? x : b), wr.xs[0]);
+          const wallZ = halfWidthAt(eye.x, wr.y);
+          yaw = THREE.MathUtils.clamp(Math.atan2(Math.abs(side * wallZ - eye.z), Math.max(0.2, wx - eye.x)), 0.45, 1.25);
         }
-        pitch = Math.atan2(WIN.y - eye.y, 1.6) - 0.04;
+        pitch = Math.atan2(wr.y - eye.y, 1.6) - 0.04;
       } else {
         yaw = 0.2;                                                                     // forward, a little towards the windows
         pitch = -0.1;

@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { SKY_GLSL, skyUniforms } from './skyglsl.js';
 import { mulberry32 } from './geo.js';
-import { makeWispTexture } from './textures.js';
 
 // ---------------------------------------------------------------------------
 // Real-time volumetric cumulus.
@@ -95,6 +94,61 @@ function makeNoise3D(N, seed = 1337) {
   return tex;
 }
 
+// Large-scale weather: where the cloud deck is thick, where it breaks up and where there is
+// open sea. Domain-warped, tileable gradient noise gives clusters and long cloud streets;
+// cellular noise clumps the cumulus; the result is stored in alpha (0 = clear, 1 = solid deck).
+function makeWeatherTexture(N = 512, seed = 9) {
+  const rng = mulberry32(seed);
+  const grid = (n) => { const g = new Float32Array(n * n * 2); for (let i = 0; i < n * n; i++) { const a = rng() * Math.PI * 2; g[i * 2] = Math.cos(a); g[i * 2 + 1] = Math.sin(a); } return g; };
+  const G = [4, 8, 16, 32, 64].map((n) => ({ n, g: grid(n) }));
+  const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+  const perlin = (x, y, { n, g }) => {             // x, y in 0..1, period n
+    const fx = x * n, fy = y * n, ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy;
+    let r = 0;
+    for (let c = 0; c < 4; c++) {
+      const dx = c & 1, dy = c >> 1;
+      const gx = ((ix + dx) % n + n) % n, gy = ((iy + dy) % n + n) % n, k = (gy * n + gx) * 2;
+      r += (g[k] * (tx - dx) + g[k + 1] * (ty - dy)) * (dx ? fade(tx) : 1 - fade(tx)) * (dy ? fade(ty) : 1 - fade(ty));
+    }
+    return r;
+  };
+  const fbm = (x, y, o0, oN) => { let s = 0, a = 0.5, w = 0; for (let o = o0; o < oN; o++) { s += perlin(x, y, G[o]) * a; w += a; a *= 0.5; } return s / w; };
+  const cells = 10, P = new Float32Array(cells * cells * 2);
+  for (let i = 0; i < P.length; i++) P[i] = rng();
+  const worley = (x, y) => {
+    const fx = x * cells, fy = y * cells, ix = Math.floor(fx), iy = Math.floor(fy);
+    let md = 9;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const cx = ix + dx, cy = iy + dy, k = ((((cy % cells) + cells) % cells) * cells + (((cx % cells) + cells) % cells)) * 2;
+      const px = cx + P[k] - fx, py = cy + P[k + 1] - fy, d = px * px + py * py;
+      if (d < md) md = d;
+    }
+    return Math.sqrt(md);
+  };
+  const data = new Uint8Array(N * N * 4);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const x = i / N, y = j / N;
+    // domain warp: bends the pattern into flowing bands and streets
+    const wx = fbm(x + 0.31, y + 0.17, 0, 3) * 0.18, wy = fbm(x + 0.73, y + 0.59, 0, 3) * 0.18;
+    const big = fbm(x + wx, y + wy, 0, 5);                         // -0.5..0.5-ish
+    const streets = perlin(x * 1 + wy, y + wx, G[2]) * 0.5;        // elongated rows
+    const clump = 1 - Math.min(1, worley(x + wx * 0.5, y + wy * 0.5) * 1.25);
+    let c = 0.5 + big * 1.6 + streets * 0.35;
+    c = c * (0.62 + 0.55 * clump);
+    c = Math.min(1, Math.max(0, (c - 0.18) / 0.72));
+    const o = (j * N + i) * 4;
+    data[o] = data[o + 1] = data[o + 2] = 255;
+    data[o + 3] = Math.round(c * 255);
+  }
+  const t = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.generateMipmaps = true;
+  t.needsUpdate = true;
+  return t;
+}
+
 const VERT = /* glsl */`
   varying vec2 vUv;
   void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
@@ -133,6 +187,9 @@ const FRAG = /* glsl */`
   uniform float uMsFloor;
   uniform vec3 uDownHaze;
   uniform float uEnvMode;
+  uniform float uFrame;
+  uniform vec2 uJitter;
+  uniform float uShadowK;
   varying vec2 vUv;
   ${SKY_GLSL}
 
@@ -140,13 +197,37 @@ const FRAG = /* glsl */`
   float hg(float c, float g) { float g2 = g * g; return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * c, 1.5); }
   float heightFrac(float y) { return clamp((y - uBottom) / (uTop - uBottom), 0.0, 1.0); }
 
+  // The Earth is round. Heights are measured above the sea directly below the
+  // camera, so far away the cloud deck and the sea drop away under the line of sight: from
+  // 10.5 km the horizon sits about 3.3 degrees below level and curves, as from a real airliner.
+  // (drawn with a somewhat smaller radius than the real 6371 km so the curve reads on a screen,
+  // the way a wide window or cockpit lens shows it)
+  const float EARTH_R = 2600000.0;
+  float alt(vec3 p) {
+    vec2 r = p.xz - uCamPos.xz;
+    return p.y + dot(r, r) / (2.0 * (EARTH_R + p.y - uGroundY));
+  }
+  // where a ray from the camera meets the curved shell at height h: (near, far), or -1 if it
+  // passes above it
+  vec2 shell(vec3 ro, vec3 rd, float h) {
+    float c = ro.y - h;
+    if (rd.y >= 0.0 || c <= 0.0) return vec2(-1.0);
+    float a = (1.0 - rd.y * rd.y) / (2.0 * (EARTH_R + h - uGroundY));
+    float disc = rd.y * rd.y - 4.0 * a * c;
+    if (disc < 0.0) return vec2(-1.0);
+    float tn = 2.0 * c / (-rd.y + sqrt(disc));
+    return vec2(tn, c / (a * tn));
+  }
+
   // cov: local coverage (sampled once per ray from the weather map)
   float density(vec3 p, float cov, bool detail) {
-    float h = heightFrac(p.y);
+    float h = heightFrac(alt(p));
     vec3 q = p + uWind * uTime;
     float topH = mix(0.5, 1.0, cov);
     float prof = smoothstep(0.0, 0.08, h) * (1.0 - smoothstep(topH * 0.45, topH, h));
-    float base = texture(uNoise, q / uShapeScale).r;
+    // two differently scaled and turned samples of the tiling noise, so the deck never repeats
+    float base = texture(uNoise, q / uShapeScale).r * 0.68
+               + texture(uNoise, vec3(q.x * 0.8 - q.z * 0.6, q.y, q.x * 0.6 + q.z * 0.8) / (uShapeScale * 3.3) + 0.29).r * 0.32;
     base = clamp((base - uBaseLo) / (uBaseHi - uBaseLo), 0.0, 1.0);
     float d = remap(base * prof, 1.0 - cov, 1.0, 0.0, 1.0);
     if (d <= 0.0) return 0.0;
@@ -160,11 +241,11 @@ const FRAG = /* glsl */`
   }
 
   void main() {
-    vec2 ndc = vUv * 2.0 - 1.0;
+    vec2 ndc = vUv * 2.0 - 1.0 + uJitter;               // sub-pixel jitter, resolved over frames
     vec4 vp = uProjInv * vec4(ndc, 1.0, 1.0);
     vec3 rd = normalize((uCamWorld * vec4(vp.xyz / vp.w, 0.0)).xyz);
     vec3 ro = uCamPos;
-    if (rd.y > -0.0004) {
+    if (rd.y > -0.0004 || (uEnvMode < 0.5 && shell(ro, rd, uTop).x < 0.0)) {
       if (uEnvMode > 0.5) {               // reflection capture: sky plus a soft sun lobe for highlights
         float sl = max(dot(rd, normalize(uSunDir)), 0.0);
         gl_FragColor = vec4(skyColor(rd, false) + uSunColor * (pow(sl, 420.0) * 6.0 + pow(sl, 24.0) * 0.12), 1.0);
@@ -177,10 +258,12 @@ const FRAG = /* glsl */`
     vec3 hazeDir = normalize(vec3(rd.x, 0.0015, rd.z));
     vec3 haze = skyColor(hazeDir, false);
 
-    float tTop = (uTop - ro.y) / rd.y;
-    float tBot = (uBottom - ro.y) / rd.y;
-    float t0 = max(tTop, 0.0);
-    float t1 = min(tBot, t0 + uMaxDist);
+    vec2 sTop = shell(ro, rd, uTop), sBot = shell(ro, rd, uBottom), sGnd = shell(ro, rd, uGroundY);
+    if (sTop.x < 0.0) sTop = vec2(0.0, 0.0);
+    bool hitGround = sGnd.x > 0.0;
+    float t0 = sTop.x;
+    // through the deck, or (near the horizon) skimming its top and out again
+    float t1 = min(sBot.x > 0.0 ? sBot.x : sTop.y, t0 + uMaxDist);
 
     // coverage along this ray (weather changes slowly, so sample at entry and exit)
     vec3 pe = ro + rd * t0 + uWind * uTime, px = ro + rd * t1 + uWind * uTime;
@@ -195,7 +278,8 @@ const FRAG = /* glsl */`
     float firstHit = -1.0;
     float dist = t1 - t0;
     float stp = max(dist / float(uSteps), 10.0);
-    float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    // interleaved gradient noise, shifted every frame so the history buffer averages it away
+    float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))) + uFrame * 0.61803398875);
     float t = t0 + stp * jitter;
     float SIGMA = uSigma;
 
@@ -203,14 +287,14 @@ const FRAG = /* glsl */`
       if (i >= uSteps || t > t1 || T < 0.012) break;
       vec3 p = ro + rd * t;
       float f = clamp((t - t0) / max(dist, 1.0), 0.0, 1.0);
-      float cov = clamp(uCoverage + (mix(wA, wB, f) - 0.5) * 0.95, 0.0, 1.0);
+      float cov = clamp(uCoverage + (mix(wA, wB, f) - 0.5) * 1.3, 0.0, 1.0);
       float dt = stp * (1.0 + (t - t0) * 0.00008);
       float dc = density(p, cov, false);
       if (dc > 0.0) {
         float d = density(p, cov, true);
         if (d > 0.002) {
           if (firstHit < 0.0) firstHit = t;
-          float ld = 0.0, ls = 20.0;
+          float ld = 0.0, ls = 12.0 + 16.0 * jitter;   // jittered start: no shadow banding
           vec3 lp = p;
           for (int j = 0; j < 6; j++) {
             if (j >= uLightSteps) break;
@@ -221,7 +305,7 @@ const FRAG = /* glsl */`
           float beer = exp(-ld * SIGMA);
           float ms = max(beer, uMsFloor * exp(-ld * SIGMA * 0.2));   // multiple scattering
           float powder = 1.0 - exp(-d * 6.0);
-          float h = heightFrac(p.y);
+          float h = heightFrac(alt(p));
           vec3 amb = mix(uAmbBottom, uAmbTop, smoothstep(0.05, 0.95, h));
           vec3 S = uSunColor * uSunPower * ms * phase * mix(0.6, 1.0, powder) + amb;
           float Ts = exp(-d * SIGMA * dt);
@@ -235,14 +319,30 @@ const FRAG = /* glsl */`
     }
 
     // ocean far below, seen through the gaps, faded by the air in between
-    float tG = (uGroundY - ro.y) / rd.y;
+    float tG = hitGround ? sGnd.x : 1e7;
+    // the clouds' shadows on the sea: follow the sunlight back up through the cloud layer
+    vec3 gp = ro + rd * tG;
+    float shadow = 1.0;
+    if (hitGround && uSunDir.y > 0.02) {
+      vec3 sd = normalize(uSunDir);
+      float tm = (mix(uBottom, uTop, 0.35) - uGroundY) / sd.y;
+      vec3 sp = gp + sd * tm;
+      vec3 sw = sp + uWind * uTime;
+      float wc = texture(uWeather, sw.xz / 15000.0).a * 0.7 + texture(uWeather, sw.xz / 5600.0 + 0.37).a * 0.3;
+      float sc = clamp(uCoverage + (wc - 0.5) * 1.3, 0.0, 1.0);
+      float sdn = density(sp, sc, false) + density(sp + sd * 180.0, sc, false);
+      shadow = mix(1.0, exp(-sdn * uShadowK), 0.85);
+    }
     // looking down through the atmosphere the in-scattered light is blue (Rayleigh);
     // towards the horizon it becomes the pale horizon haze
     vec3 airCol = mix(uDownHaze, haze, pow(1.0 - clamp(-rd.y, 0.0, 1.0), 5.0));
-    vec3 bg = mix(uGround, airCol, 1.0 - exp(-tG / uGroundHaze));
-    float hz = firstHit > 0.0 ? 1.0 - exp(-firstHit / 15000.0) : 0.0;
-    vec3 col = mix(L, haze * (1.0 - T), hz) + bg * T;
-    gl_FragColor = vec4(col, 1.0);
+    vec3 bg = mix(uGround * shadow, airCol, 1.0 - exp(-tG / uGroundHaze));
+    // the air at cruise height is clear: the deck stays visible far out, fading into the
+    // pale band along the horizon
+    float hz = firstHit > 0.0 ? 1.0 - exp(-firstHit / 110000.0) : 0.0;
+    vec3 cl = mix(L, haze * vec3(0.86, 0.9, 0.97) * (1.0 - T), hz);   // far clouds take the air's blue-grey
+    // a ray that skims the deck and misses the sea goes on into the sky (premultiplied alpha)
+    gl_FragColor = hitGround ? vec4(cl + bg * T, 1.0) : uEnvMode > 0.5 ? vec4(cl + haze * T, 1.0) : vec4(cl, 1.0 - T);
   }
 `;
 
@@ -265,7 +365,7 @@ export function createClouds({ renderer, preset, isMobile }) {
   rt.texture.magFilter = THREE.LinearFilter;
   rt.texture.generateMipmaps = false;
 
-  const weather = makeWispTexture(256, 5, { lo: 0.18, hi: 0.86 });
+  const weather = makeWeatherTexture(isMobile ? 256 : 512);
   const uniforms = {
     ...skyUniforms(preset),
     uNoise: { value: null },
@@ -274,9 +374,9 @@ export function createClouds({ renderer, preset, isMobile }) {
     uCamWorld: { value: new THREE.Matrix4() },
     uProjInv: { value: new THREE.Matrix4() },
     uTime: { value: 0 },
-    uWind: { value: new THREE.Vector3(38, 0, 6) },        // clouds drift aft under the aircraft
-    uBottom: { value: -1500 },
-    uTop: { value: -420 },
+    uWind: { value: new THREE.Vector3(235, 0, 8) },       // the deck streams aft at the airspeed (about 850 km/h)
+    uBottom: { value: -3800 },                             // a cumulus deck 2.2 to 3.8 km below
+    uTop: { value: -2200 },
     uCoverage: { value: cp.coverage },
     uDensity: { value: 1.0 },
     uSunColor: { value: new THREE.Vector3(...cp.sun) },
@@ -288,16 +388,19 @@ export function createClouds({ renderer, preset, isMobile }) {
     uSteps: { value: QUALITY[level].steps },
     uLightSteps: { value: QUALITY[level].light },
     uMaxDist: { value: 24000 },
-    uBaseLo: { value: 0.52 },
-    uBaseHi: { value: 0.8 },
+    uBaseLo: { value: 0.53 },
+    uBaseHi: { value: 0.76 },
     uErode: { value: 0.55 },
     uSigma: { value: 0.085 },
-    uShapeScale: { value: 1650 },
-    uDetailScale: { value: 230 },
+    uShapeScale: { value: 2300 },
+    uDetailScale: { value: 300 },
     uGroundHaze: { value: 22000 },
     uDownHaze: { value: new THREE.Vector3(...(cp.downHaze || [0.16, 0.3, 0.58])) },
     uMsFloor: { value: 0.24 },
     uEnvMode: { value: 0 },
+    uFrame: { value: 0 },
+    uJitter: { value: new THREE.Vector2() },
+    uShadowK: { value: 2.2 },
   };
   const mat = new THREE.ShaderMaterial({ uniforms, vertexShader: VERT, fragmentShader: FRAG, depthTest: false, depthWrite: false });
   const quadScene = new THREE.Scene();
@@ -306,9 +409,57 @@ export function createClouds({ renderer, preset, isMobile }) {
   quad.frustumCulled = false;
   quadScene.add(quad);
 
+  // Temporal accumulation: each frame's ray-march (jittered) is blended into a history buffer
+  // that is re-projected by view direction (the clouds are far away, so only the camera's
+  // rotation matters). Noise averages out over ~10 frames and the clouds stay sharp in motion.
+  const histRT = [rt.clone(), rt.clone()];
+  let histIdx = 0, reset = true;
+  const prevViewProj = new THREE.Matrix4();
+  const resolveMat = new THREE.ShaderMaterial({
+    uniforms: {
+      tCur: { value: rt.texture }, tHist: { value: histRT[0].texture },
+      uProjInv: { value: new THREE.Matrix4() }, uCamRot: { value: new THREE.Matrix4() },
+      uPrevViewProj: { value: new THREE.Matrix4() }, uAlpha: { value: 0.14 }, uReset: { value: 1 },
+      uTexel: { value: new THREE.Vector2(0.5, 0.5) },
+    },
+    vertexShader: VERT,
+    fragmentShader: /* glsl */`
+      uniform sampler2D tCur; uniform sampler2D tHist;
+      uniform mat4 uProjInv; uniform mat4 uCamRot; uniform mat4 uPrevViewProj;
+      uniform float uAlpha; uniform float uReset; uniform vec2 uTexel;
+      varying vec2 vUv;
+      void main() {
+        vec4 cur = texture2D(tCur, vUv);
+        vec2 ndc = vUv * 2.0 - 1.0;
+        vec4 vp = uProjInv * vec4(ndc, 1.0, 1.0);
+        vec3 rd = normalize((uCamRot * vec4(vp.xyz / vp.w, 0.0)).xyz);
+        vec4 pc = uPrevViewProj * vec4(rd, 0.0);
+        vec2 puv = pc.xy / pc.w * 0.5 + 0.5;
+        bool ok = pc.w > 0.0 && puv.x > 0.0 && puv.y > 0.0 && puv.x < 1.0 && puv.y < 1.0 && uReset < 0.5;
+        if (!ok) { gl_FragColor = cur; return; }
+        // clamp the history to this pixel's neighbourhood so it can't ghost
+        vec4 mn = cur, mx = cur;
+        for (int k = 0; k < 4; k++) {
+          vec2 o = vec2(k == 0 ? 1.0 : (k == 1 ? -1.0 : 0.0), k == 2 ? 1.0 : (k == 3 ? -1.0 : 0.0)) * uTexel;
+          vec4 c = texture2D(tCur, vUv + o);
+          mn = min(mn, c); mx = max(mx, c);
+        }
+        vec4 ext = (mx - mn) * 0.25;
+        vec4 hist = clamp(texture2D(tHist, puv), mn - ext, mx + ext);
+        gl_FragColor = mix(hist, cur, uAlpha);
+      }`,
+    depthTest: false, depthWrite: false,
+  });
+  const resolveScene = new THREE.Scene();
+  const resolveQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), resolveMat);
+  resolveQuad.frustumCulled = false;
+  resolveScene.add(resolveQuad);
+  const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
+  let frame = 0;
+
   // composite: drawn in the main scene behind the aircraft (depth = far), over the sky dome
   const compMat = new THREE.ShaderMaterial({
-    uniforms: { tClouds: { value: rt.texture }, uOpacity: { value: 0 }, uTexel: { value: new THREE.Vector2(0.5, 0.5) } },
+    uniforms: { tClouds: { value: histRT[0].texture }, uOpacity: { value: 0 }, uTexel: { value: new THREE.Vector2(0.5, 0.5) } },
     transparent: true,
     depthWrite: false,
     premultipliedAlpha: true,
@@ -316,7 +467,7 @@ export function createClouds({ renderer, preset, isMobile }) {
     // soft 5-tap tent upsample hides the ray-march dither at cloud edges
     fragmentShader: /* glsl */`uniform sampler2D tClouds; uniform float uOpacity; uniform vec2 uTexel; varying vec2 vUv;
       void main(){
-        vec2 o = uTexel * 0.9;
+        vec2 o = uTexel * 0.55;
         vec4 c = texture2D(tClouds, vUv) * 0.4;
         c += texture2D(tClouds, vUv + vec2( o.x,  o.y)) * 0.15;
         c += texture2D(tClouds, vUv + vec2(-o.x,  o.y)) * 0.15;
@@ -343,7 +494,10 @@ export function createClouds({ renderer, preset, isMobile }) {
     const q = QUALITY[level];
     const rw = Math.max(2, Math.round(w * q.scale)), rh = Math.max(2, Math.round(h * q.scale));
     rt.setSize(rw, rh);
+    for (const h of histRT) h.setSize(rw, rh);
     compMat.uniforms.uTexel.value.set(1 / rw, 1 / rh);
+    resolveMat.uniforms.uTexel.value.set(1 / rw, 1 / rh);
+    reset = true;
   }
   function setQuality(l) {
     level = Math.max(0, Math.min(QUALITY.length - 1, l));
@@ -352,22 +506,47 @@ export function createClouds({ renderer, preset, isMobile }) {
     setSize(size.w, size.h);
   }
   const prevRT = { t: null };
+  const camRot = new THREE.Matrix4(), viewRot = new THREE.Matrix4(), q = new THREE.Quaternion(), vpNow = new THREE.Matrix4();
   function render(camera) {
     if (!ready) return;
     camera.updateMatrixWorld();
+    frame++;
+    uniforms.uFrame.value = frame % 1024;
+    // sub-pixel jitter (Halton 2,3), in normalised device units of the cloud buffer
+    uniforms.uJitter.value.set((halton(frame % 16 + 1, 2) - 0.5) * 2 * resolveMat.uniforms.uTexel.value.x, (halton(frame % 16 + 1, 3) - 0.5) * 2 * resolveMat.uniforms.uTexel.value.y);
     uniforms.uCamPos.value.setFromMatrixPosition(camera.matrixWorld);
     uniforms.uCamWorld.value.copy(camera.matrixWorld);
     uniforms.uProjInv.value.copy(camera.projectionMatrixInverse);
     prevRT.t = renderer.getRenderTarget();
     renderer.setRenderTarget(rt);
     renderer.render(quadScene, quadCam);
+    // resolve into the other history buffer
+    camera.getWorldQuaternion(q);
+    camRot.makeRotationFromQuaternion(q);
+    viewRot.copy(camRot).invert();
+    vpNow.multiplyMatrices(camera.projectionMatrix, viewRot);
+    const src = histRT[histIdx], dst = histRT[1 - histIdx];
+    const ru = resolveMat.uniforms;
+    ru.tHist.value = src.texture;
+    ru.uProjInv.value.copy(camera.projectionMatrixInverse);
+    ru.uCamRot.value.copy(camRot);
+    ru.uPrevViewProj.value.copy(prevViewProj);
+    ru.uReset.value = reset ? 1 : 0;
+    renderer.setRenderTarget(dst);
+    renderer.render(resolveScene, quadCam);
     renderer.setRenderTarget(prevRT.t);
+    histIdx = 1 - histIdx;
+    compMat.uniforms.tClouds.value = dst.texture;
+    prevViewProj.copy(vpNow);
+    reset = false;
   }
   function update(dt) { uniforms.uTime.value += dt; }
 
   // Capture the real sky + volumetric clouds + ocean into a cube map from the aircraft's
   // position, so paint, glass and metal reflect exactly what's around them.
-  function captureEnv(size = 160) {
+  // env: true gives an opaque sky-and-cloud cube for reflections; false keeps the sky
+  // see-through (premultiplied alpha) so it can sit over the sky dome, as the VR view does
+  function captureEnv(size = 160, { env = true, steps = 56, light = 4 } = {}) {
     if (!ready) return null;
     const cubeRT = new THREE.WebGLCubeRenderTarget(size, { type: THREE.HalfFloatType });
     const cubeCam = new THREE.CubeCamera(0.1, 1000, cubeRT);
@@ -376,7 +555,8 @@ export function createClouds({ renderer, preset, isMobile }) {
     cubeCam.position.set(0, 0, 0);
     cubeCam.updateMatrixWorld(true);
     const keep = { s: uniforms.uSteps.value, l: uniforms.uLightSteps.value };
-    uniforms.uSteps.value = 56; uniforms.uLightSteps.value = 4; uniforms.uEnvMode.value = 1;
+    uniforms.uSteps.value = steps; uniforms.uLightSteps.value = light; uniforms.uEnvMode.value = env ? 1 : 0;
+    uniforms.uJitter.value.set(0, 0);
     const prev = renderer.getRenderTarget();
     cubeCam.children.forEach((cam, i) => {
       cam.updateMatrixWorld(true);
@@ -391,5 +571,5 @@ export function createClouds({ renderer, preset, isMobile }) {
     return cubeRT;
   }
 
-  return { composite, render, update, setSize, setQuality, captureEnv, get level() { return level; }, ready: promise, uniforms };
+  return { composite, render, update, setSize, setQuality, captureEnv, resetHistory: () => { reset = true; }, get level() { return level; }, ready: promise, uniforms };
 }
